@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "vapour-editor",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        ".claude/dev.sh",
+        "@vapour/editor",
+        "5173"
+      ],
+      "port": 5173
+    },
+    {
+      "name": "cubegame",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        ".claude/dev.sh",
+        "cubegame",
+        "5174"
+      ],
+      "port": 5174
+    }
+  ]
+}

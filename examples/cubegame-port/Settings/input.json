@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "actions": [
+    { "name": "MoveX", "kind": "axis", "bindings": ["KeyA", "KeyD", "GamepadLeftX"] },
+    { "name": "MoveForward", "kind": "axis", "bindings": ["KeyS", "KeyW", "GamepadLeftY"] },
+    { "name": "LookX", "kind": "axis", "bindings": ["PointerX", "GamepadRightX"] },
+    { "name": "LookY", "kind": "axis", "bindings": ["PointerY", "GamepadRightY"] },
+    { "name": "Jump", "kind": "button", "bindings": ["Space", "GamepadSouth"] },
+    { "name": "Break", "kind": "button", "bindings": ["PointerPrimary"] },
+    { "name": "Place", "kind": "button", "bindings": ["PointerSecondary"] }
+  ]
+}

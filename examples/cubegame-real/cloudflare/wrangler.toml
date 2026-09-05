@@ -1,0 +1,12 @@
+name = "cubegame-backend"
+main = "worker.js"
+compatibility_date = "2026-06-12"
+
+# Optional KV persistence. Create these namespaces in Cloudflare and uncomment.
+# [[kv_namespaces]]
+# binding = "CUBEGAME_ACCOUNTS"
+# id = "replace-with-your-kv-id"
+#
+# [[kv_namespaces]]
+# binding = "CUBEGAME_SESSIONS"
+# id = "replace-with-your-kv-id"

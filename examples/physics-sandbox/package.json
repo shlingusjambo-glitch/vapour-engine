@@ -1,0 +1,24 @@
+{
+  "name": "@vapour/example-physics-sandbox",
+  "version": "0.2.5-alpha",
+  "type": "module",
+  "private": true,
+  "description": "Mirage showcase: a physics sandbox with spawnable props, grabbing, throwing, constraints, and doors",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "run": "tsc -p tsconfig.json && node dist/run.js"
+  },
+  "dependencies": {
+    "@vapour/engine": "workspace:*",
+    "@vapour/math": "workspace:*",
+    "@vapour/assetgen": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later"
+}

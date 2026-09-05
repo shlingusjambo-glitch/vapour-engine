@@ -1,0 +1,13 @@
+packages:
+  - packages/*
+  - examples/cubegame-real
+  - examples/narrative-real
+  - examples/ai-environment
+  - examples/physics-sandbox
+  - examples/multiplayer-arena
+
+allowBuilds:
+  esbuild: set this to true or false
+
+onlyBuiltDependencies:
+  - esbuild

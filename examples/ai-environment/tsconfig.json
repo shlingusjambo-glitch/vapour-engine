@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "references": [{ "path": "../../packages/assetgen" }, { "path": "../../packages/math" }, { "path": "../../packages/engine" }]
+}

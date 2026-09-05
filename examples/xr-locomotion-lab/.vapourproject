@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "id": "fcd2649d-e903-4b7d-a479-4250ff5fd342",
+  "name": "Vapour XR Locomotion Lab",
+  "editorVersion": "0.2.0-alpha",
+  "startupScene": "Assets/Scenes/Main.scene.json",
+  "scriptEntry": "Scripts/main.ts",
+  "rendering": {
+    "preferredCanvasFormat": "auto",
+    "powerPreference": "high-performance"
+  }
+}

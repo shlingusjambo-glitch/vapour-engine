@@ -1,0 +1,23 @@
+{
+  "name": "@vapour/math",
+  "version": "0.2.5-alpha",
+  "type": "module",
+  "description": "Shared linear algebra, easing, curves, gradients, and geometry for Vapour Engine",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later"
+}

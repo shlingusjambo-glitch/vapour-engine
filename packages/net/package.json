@@ -1,0 +1,26 @@
+{
+  "name": "@vapour/net",
+  "version": "0.2.5-alpha",
+  "type": "module",
+  "description": "Authoritative multiplayer for Vapour Engine: replication, RPCs, prediction, and interest management",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vapour/math": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later"
+}

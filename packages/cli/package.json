@@ -1,0 +1,26 @@
+{
+  "name": "@vapour/cli",
+  "version": "0.2.0-alpha",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "vapour": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "start": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vapour/engine": "workspace:*",
+    "esbuild": "^0.25.9",
+    "typescript": "^5.9.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later"
+}

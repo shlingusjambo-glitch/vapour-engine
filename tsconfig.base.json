@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@vapour/engine": ["packages/engine/src/index.ts"],
+      "@vapour/math": ["packages/math/src/index.ts"],
+      "@vapour/gameplay": ["packages/gameplay/src/index.ts"],
+      "@vapour/assetgen": ["packages/assetgen/src/index.ts"],
+      "@vapour/net": ["packages/net/src/index.ts"]
+    },
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useDefineForClassFields": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  }
+}

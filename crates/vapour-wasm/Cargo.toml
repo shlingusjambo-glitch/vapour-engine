@@ -1,0 +1,29 @@
+[package]
+name = "vapour-wasm"
+description = "Batched WebAssembly host boundary for Vapour Engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+console_error_panic_hook.workspace = true
+glam.workspace = true
+js-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+vapour-core = { path = "../vapour-core" }
+vapour-render = { path = "../vapour-render" }
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+wgpu.workspace = true
+
+[dependencies.web-sys]
+workspace = true
+features = ["HtmlCanvasElement"]

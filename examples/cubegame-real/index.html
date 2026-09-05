@@ -1,0 +1,3300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover, user-scalable=no, interactive-widget=resizes-content">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>CubeGame - Vapour Engine</title>
+  <script>
+    // Native/desktop boot guard. This script runs before the bundled Vite module.
+    // It does not show a fake menu; it only prevents a silent eternal splash by
+    // printing the real boot stage if the TypeScript bundle never reports ready.
+    (function(){
+      window.cubeGameBootStage = window.cubeGameBootStage || 'html-head';
+      function setBootStatus(message) {
+        var splash = document.getElementById('vapour-engine-splash');
+        if (!splash) return;
+        var status = document.getElementById('vapour-boot-status');
+        if (!status) {
+          status = document.createElement('div');
+          status.id = 'vapour-boot-status';
+          status.style.cssText = 'margin-top:24px;max-width:min(680px,calc(100vw - 40px));font-family:monospace;font-size:16px;line-height:1.35;color:#f0f0ff;text-align:center;opacity:.94;white-space:pre-wrap';
+          splash.appendChild(status);
+        }
+        status.textContent = message;
+      }
+      window.cubeGameSetBootStatus = setBootStatus;
+      window.addEventListener('error', function(event){
+        if (window.cubeGameAppReady === true) return;
+        setBootStatus('CubeGame startup error: ' + (event.message || 'unknown error') + '\nStage: ' + (window.cubeGameBootStage || 'unknown'));
+      });
+      window.addEventListener('unhandledrejection', function(event){
+        if (window.cubeGameAppReady === true) return;
+        var reason = event.reason && event.reason.message ? event.reason.message : String(event.reason || 'unknown rejection');
+        setBootStatus('CubeGame startup promise failed: ' + reason + '\nStage: ' + (window.cubeGameBootStage || 'unknown'));
+      });
+      window.setTimeout(function(){
+        if (window.cubeGameAppReady === true || window.cubeGameBootFailed === true) return;
+        setBootStatus('Still booting CubeGame…\nStage: ' + (window.cubeGameBootStage || 'waiting for bundle') + '\nIf this stays here, the desktop package is stale or startup crashed.');
+      }, 5000);
+    })();
+  </script>
+  <style>
+    /* Desktop builds must not block startup on external font providers.
+       The pixel style now uses local/system fallbacks so the game boots offline. */
+
+    :root {
+      --bg-glass: rgba(18, 18, 24, 0.75);
+      --bg-glass-heavy: rgba(12, 12, 16, 0.92);
+      --border-glass: rgba(255, 255, 255, 0.12);
+      --border-active: rgba(255, 255, 255, 0.4);
+      --color-primary: #00e6ff;
+      --color-accent: #ff0077;
+      --menu-panel-bg: rgba(12, 12, 16, 0.82);
+      --menu-panel-border: rgba(255, 255, 255, 0.14);
+      --menu-soft-text: #aeb8c8;
+      --font-ui: 'Courier New', 'Menlo', monospace;
+      --font-mono: 'Courier New', 'Menlo', monospace;
+      --menu-dirt-texture:
+        radial-gradient(circle at 4px 4px, rgba(98, 70, 46, 0.85) 0 2px, transparent 2px),
+        radial-gradient(circle at 13px 9px, rgba(50, 36, 25, 0.88) 0 2px, transparent 2px),
+        radial-gradient(circle at 24px 18px, rgba(128, 88, 54, 0.72) 0 2px, transparent 2px),
+        linear-gradient(45deg, rgba(38, 27, 20, 0.82) 25%, transparent 25% 75%, rgba(38, 27, 20, 0.82) 75%),
+        linear-gradient(135deg, rgba(105, 74, 48, 0.78) 25%, transparent 25% 75%, rgba(105, 74, 48, 0.78) 75%),
+        #332318;
+    }
+
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-user-drag: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      scrollbar-width: thin;
+      scrollbar-color: #8f8f8f #151515;
+    }
+
+    *::-webkit-scrollbar {
+      width: 14px;
+      height: 14px;
+    }
+
+    *::-webkit-scrollbar-track {
+      background:
+        linear-gradient(45deg, rgba(255,255,255,0.04) 25%, transparent 25% 75%, rgba(255,255,255,0.04) 75%),
+        #151515;
+      background-size: 8px 8px;
+      border: 2px solid #000;
+    }
+
+    *::-webkit-scrollbar-thumb {
+      background: #777;
+      border: 2px solid #000;
+      box-shadow: inset 2px 2px 0 #bdbdbd, inset -2px -2px 0 #333;
+    }
+
+    *::-webkit-scrollbar-thumb:hover {
+      background: #9a9a9a;
+    }
+
+    *::-webkit-scrollbar-corner {
+      background: #151515;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #050508;
+      font-family: var(--font-ui);
+      color: #ffffff;
+    }
+
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
+
+    #loading-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 220;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: #120f0b;
+      color: #f5f5f5;
+      font-family: var(--font-mono);
+      text-align: center;
+    }
+
+    .loading-panel {
+      width: min(560px, calc(100vw - 36px));
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .loading-title {
+      font-size: 22px;
+      text-shadow: 2px 2px #000;
+    }
+
+    .loading-bar {
+      height: 18px;
+      border: 2px solid #d8d8d8;
+      background: #2a2a2a;
+      box-shadow: inset 0 0 0 2px #000;
+      overflow: hidden;
+    }
+
+    #loading-bar-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #6bd34b, #a7f36c);
+      transition: width 0.18s linear;
+    }
+
+    #loading-status {
+      min-height: 20px;
+      color: #d8d8d8;
+      font-size: 14px;
+    }
+
+    /* HUD layer. Hidden by default so a native boot failure cannot show game HUD
+       on top of an unbound main menu. PauseMenu.showGameplayUI() enables it only
+       after the TypeScript app is alive and a world is actually being played. */
+    #hud-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      pointer-events: none;
+      display: none;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 20px;
+    }
+
+    /* Active Effects Panel */
+    #active-effects-panel {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+      z-index: 100;
+      pointer-events: none;
+      font-family: var(--font-ui);
+    }
+    .active-effect-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--border-glass);
+      border-radius: 8px;
+      padding: 6px 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      min-width: 140px;
+      transition: all 0.2s ease-in-out;
+      animation: effect-fade-in 0.2s ease-out;
+    }
+    .active-effect-card.wearing-off {
+      animation: effect-blink 1s infinite alternate;
+    }
+    .active-effect-icon {
+      font-size: 18px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .active-effect-details {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .active-effect-name {
+      font-size: 13px;
+      font-weight: bold;
+      color: #ffffff;
+      text-transform: capitalize;
+    }
+    .active-effect-duration {
+      font-size: 11px;
+      color: var(--menu-soft-text);
+      margin-top: 1px;
+    }
+    @keyframes effect-fade-in {
+      from { opacity: 0; transform: translateX(20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes effect-blink {
+      0% { opacity: 1; }
+      100% { opacity: 0.4; }
+    }
+
+    /* Crosshair */
+    #crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 12px;
+      height: 12px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 11;
+    }
+    #crosshair::before, #crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(255, 255, 255, 0.85);
+    }
+    #crosshair::before {
+      top: 5px;
+      left: 0;
+      width: 12px;
+      height: 2px;
+    }
+    #crosshair::after {
+      top: 0;
+      left: 5px;
+      width: 2px;
+      height: 12px;
+    }
+
+    /* Top Stats / Debug Panel */
+    #debug-panel {
+      position: absolute;
+      inset: 4px 4px auto 4px;
+      display: none;
+      grid-template-columns: minmax(420px, 1fr) minmax(330px, auto);
+      gap: 16px;
+      align-items: start;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-family: var(--font-mono);
+      font-size: clamp(13px, 1.45vw, 22px);
+      color: #f2f2f2;
+      line-height: 0.92;
+      text-shadow: 2px 2px 0 #222, -1px -1px 0 #222;
+      white-space: pre-line;
+      pointer-events: none;
+    }
+    #debug-panel.f3-visible { display: grid; }
+    .debug-column { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+    .debug-column.right { align-items: flex-end; text-align: right; }
+    .debug-line { background: rgba(80, 80, 80, 0.48); padding: 0 4px 2px; }
+    #debug-panel span {
+      color: #ffffff;
+    }
+
+    .game-logo, .server-logo, .crownforge-logo, .menu-title, .hud-label, .hotbar-label,
+    button, .tab, .minigame-card, .debug-line, #debug-panel, #crosshair, #bottom-hud, .item-slot {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    img, .game-logo img, .server-logo img, .crownforge-logo img {
+      -webkit-user-drag: none;
+      user-drag: none;
+    }
+    input, textarea, #chat-input, #cfg-server-ip, #join-server-input, .server-link-input,
+    [contenteditable="true"] {
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
+    }
+
+    html.ios-native *:not(input):not(textarea):not([contenteditable="true"]) {
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-touch-callout: none !important;
+      -webkit-tap-highlight-color: transparent !important;
+    }
+
+
+
+    /* BedWars shop fallback: no more fragile villager hitboxes. */
+    #bedwars-shop-shortcuts {
+      position: absolute;
+      top: max(16px, env(safe-area-inset-top));
+      right: max(16px, env(safe-area-inset-right));
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 18;
+      pointer-events: auto;
+      font-family: var(--font-mono);
+    }
+    #bedwars-shop-shortcuts.visible { display: flex; }
+    .bedwars-shop-button {
+      min-width: 174px;
+      padding: 9px 12px;
+      color: #fff7d8;
+      background: linear-gradient(#5b3b16, #2b1a09);
+      border: 2px solid #f3c762;
+      box-shadow: inset 0 0 0 2px rgba(0,0,0,.65), 0 4px 0 rgba(0,0,0,.45);
+      text-shadow: 2px 2px 0 #000;
+      font-weight: 800;
+      letter-spacing: .02em;
+      cursor: pointer;
+    }
+    .bedwars-shop-button:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .bedwars-shop-button:active { transform: translateY(2px); box-shadow: inset 0 0 0 2px rgba(0,0,0,.65), 0 1px 0 rgba(0,0,0,.45); }
+    #bedwars-shop-hint {
+      max-width: 174px;
+      padding: 6px 8px;
+      color: #ffeaa4;
+      background: rgba(0,0,0,.52);
+      border: 1px solid rgba(255,230,120,.45);
+      font-size: 11px;
+      line-height: 1.2;
+      text-align: center;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    /* Bottom HUD (Hotbar & Health) */
+    #bottom-hud {
+      position: absolute;
+      bottom: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      pointer-events: auto;
+    }
+
+    /* Health and Hunger icons */
+    #player-stats {
+      display: flex;
+      gap: 26px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      text-transform: uppercase;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+      align-items: center;
+    }
+    .stat-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .stat-icons {
+      width: 210px;
+      display: grid;
+      grid-template-columns: repeat(10, 18px);
+      gap: 3px;
+      align-items: center;
+      justify-content: center;
+      image-rendering: pixelated;
+    }
+    .stat-icon {
+      position: relative;
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      line-height: 18px;
+      font-family: var(--font-mono);
+      font-size: 19px;
+      text-align: center;
+      text-shadow: 2px 2px 0 #000;
+      overflow: hidden;
+    }
+    .stat-icon.health {
+      font-size: 21px;
+    }
+    .stat-icon.hunger {
+      font-size: 17px;
+      filter: drop-shadow(2px 2px 0 #000);
+    }
+    .stat-icon-empty {
+      color: rgba(50, 50, 50, 0.78);
+      filter: grayscale(1) brightness(0.55);
+    }
+    .stat-icon-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      color: #ff3030;
+    }
+    .stat-icon.hunger .stat-icon-fill {
+      color: #f0a23a;
+      filter: saturate(1.1);
+    }
+    .stat-icon[data-fill="half"] .stat-icon-fill {
+      width: 50% !important;
+    }
+    .stat-icon[data-fill="empty"] .stat-icon-fill {
+      width: 0% !important;
+    }
+    .stat-bar-outer {
+      width: 120px;
+      height: 8px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .stat-bar-inner {
+      height: 100%;
+      width: 100%;
+      transition: width 0.2s ease-out;
+    }
+
+    /* Hotbar Grid */
+    #hotbar {
+      display: flex;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      border: 1.5px solid var(--border-glass);
+      padding: 6px;
+      border-radius: 12px;
+      gap: 6px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .slot {
+      width: 54px;
+      height: 54px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      position: relative;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      transition: background 0.15s, border 0.15s, transform 0.1s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.15s;
+    }
+
+    .slot:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.25);
+      transform: scale(1.08);
+      box-shadow: 0 0 10px rgba(255, 255, 255, 0.15);
+    }
+
+    .slot.active {
+      border: 2px solid var(--color-primary);
+      background: rgba(0, 230, 255, 0.08);
+      box-shadow: 0 0 12px rgba(0, 230, 255, 0.3);
+    }
+
+    .slot .item-icon {
+      width: 38px;
+      height: 38px;
+      image-rendering: pixelated;
+      pointer-events: none;
+    }
+
+    .slot .item-count {
+      position: absolute;
+      bottom: 4px;
+      right: 6px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #ffffff;
+      text-shadow: 1px 1px 2px #000000, -1px -1px 2px #000000;
+      font-weight: bold;
+    }
+
+    /* Screen UI (Inventory / Pause) */
+    .screen-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 100;
+      background: rgba(4, 4, 6, 0.7);
+      backdrop-filter: blur(15px);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      animation: fadeIn 0.25s ease-out;
+    }
+
+
+    body.cubegame-ui-active #canvas-container {
+      pointer-events: none;
+    }
+
+    .screen-overlay,
+    #server-link-modal,
+    #vapour-engine-splash {
+      pointer-events: auto;
+    }
+
+    body.cubegame-game-active #canvas-container {
+      pointer-events: auto;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    /* Inventory Container */
+    #inventory-container, .inventory-container {
+      background: var(--bg-glass-heavy);
+      border: 1px solid var(--border-glass);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+      border-radius: 16px;
+      padding: 24px;
+      display: flex;
+      flex-direction: row;
+      gap: 32px;
+      max-width: min(1180px, calc(100vw - 32px));
+    }
+
+    .inventory-section {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .inventory-section-title {
+      font-weight: 600;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #a0a0c0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 6px;
+      margin-bottom: 4px;
+    }
+
+    /* Grid Layouts */
+    .inventory-grid {
+      display: grid;
+      grid-template-columns: repeat(9, 50px);
+      grid-template-rows: repeat(3, 50px);
+      gap: 6px;
+    }
+
+    .inventory-hotbar-grid {
+      display: grid;
+      grid-template-columns: repeat(9, 50px);
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .crafting-container {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 16px;
+      border-radius: 12px;
+    }
+
+    .crafting-grid-3x3 {
+      display: grid;
+      grid-template-columns: repeat(3, 50px);
+      grid-template-rows: repeat(3, 50px);
+      gap: 6px;
+    }
+
+    .crafting-grid-2x2 {
+      display: grid;
+      grid-template-columns: repeat(2, 50px);
+      grid-template-rows: repeat(2, 50px);
+      gap: 6px;
+    }
+
+    @keyframes invSlideUp {
+      from {
+        transform: translateY(30px) scale(0.98);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+      }
+    }
+
+    .inv-open .inventory-container,
+    .inv-open #inventory-container {
+      animation: invSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    .crafting-arrow {
+      font-size: 28px;
+      color: var(--color-primary);
+      text-shadow: 0 0 10px rgba(0, 230, 255, 0.4);
+    }
+
+    .crafting-output {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .recipe-book-panel {
+      width: 260px;
+      min-width: 240px;
+      max-height: min(520px, calc(100vh - 150px));
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border-left: 1px solid rgba(255, 255, 255, 0.08);
+      padding-left: 18px;
+      font-family: 'Share Tech Mono', monospace;
+    }
+
+    .recipe-book-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .recipe-book-title {
+      font-size: 14px;
+      color: #e6f7ff;
+      text-transform: uppercase;
+    }
+
+    .recipe-book-toggle {
+      height: 30px;
+      padding: 0 10px;
+      border: 1px solid rgba(0, 230, 255, 0.35);
+      background: rgba(255, 255, 255, 0.06);
+      color: #e8fbff;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .recipe-book-toggle.active {
+      background: rgba(0, 230, 255, 0.18);
+      border-color: rgba(0, 230, 255, 0.8);
+    }
+
+    .recipe-book-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(170px, 1fr) auto;
+      gap: 10px;
+    }
+
+    .recipe-book-list {
+      min-height: 0;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      padding-right: 4px;
+    }
+
+    .recipe-book-entry {
+      height: 42px;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.045);
+      color: #dcecff;
+      font-family: inherit;
+      font-size: 10px;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    .recipe-book-entry span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .recipe-book-entry.craftable {
+      border-color: rgba(92, 255, 135, 0.45);
+    }
+
+    .recipe-book-entry.locked {
+      opacity: 0.58;
+    }
+
+    .recipe-book-entry.selected {
+      outline: 2px solid rgba(0, 230, 255, 0.72);
+      background: rgba(0, 230, 255, 0.12);
+    }
+
+    .recipe-book-icon {
+      width: 26px;
+      height: 26px;
+      flex: 0 0 26px;
+      image-rendering: pixelated;
+    }
+
+    .recipe-book-detail {
+      min-height: 178px;
+      max-height: 220px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 10px;
+      padding-right: 4px;
+      color: #ccd8ea;
+      font-size: 11px;
+    }
+
+    .recipe-book-output {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      margin-bottom: 8px;
+    }
+
+    .recipe-book-output-icon {
+      width: 34px;
+      height: 34px;
+      image-rendering: pixelated;
+      flex: 0 0 34px;
+    }
+
+    .recipe-book-output-name {
+      min-width: 0;
+      color: #ffffff;
+      overflow-wrap: anywhere;
+      line-height: 1.2;
+    }
+
+    .recipe-book-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 34px);
+      grid-template-rows: repeat(3, 34px);
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .recipe-book-cell {
+      position: relative;
+      width: 34px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .recipe-book-cell-icon {
+      width: 28px;
+      height: 28px;
+      image-rendering: pixelated;
+    }
+
+    .recipe-book-any-tag {
+      position: absolute;
+      right: 1px;
+      bottom: 1px;
+      padding: 0 2px;
+      font-size: 6px;
+      line-height: 8px;
+      color: #101010;
+      background: #ffff55;
+      border: 1px solid #111;
+      pointer-events: none;
+    }
+
+    .recipe-book-ingredients {
+      display: grid;
+      gap: 2px;
+      color: #b8c7d8;
+      max-height: 54px;
+      overflow-y: auto;
+    }
+
+    .recipe-book-note,
+    .recipe-book-empty {
+      margin-top: 6px;
+      color: #86dfff;
+      line-height: 1.25;
+    }
+
+    @media (max-width: 980px) {
+      #inventory-container, .inventory-container {
+        flex-wrap: wrap;
+        gap: 18px;
+        justify-content: center;
+        overflow-y: auto;
+        max-height: calc(100vh - 32px);
+      }
+
+      .recipe-book-panel {
+        width: min(560px, calc(100vw - 80px));
+        border-left: 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        padding-left: 0;
+        padding-top: 14px;
+      }
+    }
+
+    /* Pause Menu & Settings styles */
+    #pause-container {
+      background: var(--bg-glass-heavy);
+      border: 1px solid var(--border-glass);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+      border-radius: 16px;
+      padding: 28px;
+      width: min(920px, calc(100vw - 40px));
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      align-items: stretch;
+      text-align: center;
+    }
+
+    #pause-container h1 {
+      font-weight: 700;
+      font-size: 28px;
+      letter-spacing: 2px;
+      margin: 0 0 10px 0;
+      background: linear-gradient(135deg, #ffffff, #8899aa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .menu-layout {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 24px;
+      text-align: left;
+    }
+
+    .menu-column {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .menu-panel {
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .menu-panel-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px 16px;
+    }
+
+    .btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-glass);
+      color: #ffffff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .btn:hover {
+      background: var(--color-primary);
+      color: #000000;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 15px rgba(0, 230, 255, 0.4);
+    }
+
+    .btn-accent {
+      border-color: var(--color-accent);
+      background: rgba(255, 0, 119, 0.05);
+    }
+    .btn-accent:hover {
+      background: var(--color-accent);
+      color: #ffffff;
+      border-color: var(--color-accent);
+      box-shadow: 0 0 15px rgba(255, 0, 119, 0.4);
+    }
+
+    .settings-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      text-align: left;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 16px;
+    }
+
+    .setting-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      font-size: 13px;
+      color: #a0a0c0;
+    }
+
+    .setting-item input[type="range"] {
+      width: 160px;
+      accent-color: var(--color-primary);
+      cursor: pointer;
+    }
+
+    .setting-item input[type="text"], .setting-item select {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 6px 10px;
+      border-radius: 4px;
+      color: white;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      width: 160px;
+    }
+
+    .setting-help {
+      color: #9da9ba;
+      font-size: 12px;
+      line-height: 1.25;
+      margin-top: 4px;
+    }
+
+    .input-bindings-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .input-bind-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+      padding: 8px;
+      background: rgba(255,255,255,0.055);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 6px;
+    }
+
+    .keybind-btn {
+      min-width: 94px;
+      height: 30px;
+      border: 1px solid rgba(255,255,255,0.28);
+      border-radius: 4px;
+      background: rgba(0,0,0,0.38);
+      color: #fff;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .keybind-btn.listening {
+      border-color: #55ff55;
+      color: #55ff55;
+    }
+
+    .seed-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .seed-row input {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .mini-btn {
+      padding: 7px 10px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 760px) {
+      .menu-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .menu-panel-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Dragging item stack */
+    #dragged-item {
+      position: absolute;
+      pointer-events: none;
+      z-index: 200;
+      width: 44px;
+      height: 44px;
+      display: none;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #dragged-item img {
+      width: 36px;
+      height: 36px;
+      image-rendering: pixelated;
+    }
+
+    #dragged-item span {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #ffffff;
+      font-weight: bold;
+      text-shadow: 1px 1px 2px #000, -1px -1px 2px #000;
+    }
+
+    /* Chat log overlay */
+    #chat-overlay {
+      position: absolute;
+      bottom: 100px;
+      left: 20px;
+      width: 320px;
+      z-index: 15;
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    #chat-messages {
+      max-height: 180px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.85);
+      text-shadow: 1px 1px 2px #000;
+    }
+
+    .chat-msg {
+      background: rgba(0, 0, 0, 0.4);
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    #chat-input {
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      padding: 8px 12px;
+      border-radius: 6px;
+      color: white;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      pointer-events: auto;
+      display: none;
+    }
+
+    #chat-input:focus {
+      outline: none;
+      border-color: var(--color-primary);
+    }
+
+    /* Main Menu Screen */
+    #main-menu-screen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 105;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: linear-gradient(rgba(10, 10, 15, 0.15), rgba(15, 15, 22, 0.45));
+      backdrop-filter: blur(1px);
+    }
+
+    .main-menu-logo-container {
+      position: relative;
+      margin-bottom: 40px;
+    }
+
+    .minecraft-logo {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 64px;
+      font-weight: 900;
+      letter-spacing: 4px;
+      color: #dfdfdf;
+      text-shadow: 
+        0 2px 0 #b0b0b0,
+        0 4px 0 #909090,
+        0 6px 0 #707070,
+        0 8px 0 #505050,
+        0 10px 15px rgba(0,0,0,0.8);
+      transform: skewX(-5deg);
+      text-align: center;
+    }
+
+    .splash-text {
+      position: absolute;
+      right: -80px;
+      bottom: -15px;
+      color: #ffff00;
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: bold;
+      text-shadow: 2px 2px #000;
+      transform: rotate(-20deg);
+      animation: pulse-splash 0.5s infinite alternate ease-in-out;
+      white-space: nowrap;
+    }
+
+    @keyframes pulse-splash {
+      0% { transform: rotate(-20deg) scale(0.95); }
+      100% { transform: rotate(-20deg) scale(1.1); }
+    }
+
+    .main-menu-btn-group {
+      width: 400px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .skin-import-row {
+      width: 400px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      margin-top: 14px;
+      text-align: center;
+      font-family: var(--font-mono);
+      color: #d8d8d8;
+      text-shadow: 2px 2px 0 #000;
+    }
+
+    #skin-import-status {
+      min-height: 16px;
+      font-size: 11px;
+      color: #e6e6e6;
+      overflow-wrap: anywhere;
+    }
+
+    .main-menu-row {
+      display: flex;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .main-menu-row button {
+      flex: 1;
+    }
+
+    /* Consistent voxel menu button styling */
+    .mc-btn {
+      background: linear-gradient(180deg, #8a8a8a 0%, #686868 48%, #565656 100%);
+      border: 2px solid #0a0a0a;
+      box-shadow: inset 2px 2px 0px #d8d8d8, inset -2px -2px 0px #363636, 0 3px 0 rgba(0,0,0,0.45);
+      color: #f2f2f2;
+      text-shadow: 2px 2px 0px #202020;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: bold;
+      padding: 12px 14px;
+      cursor: pointer;
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      min-height: 44px;
+      border-radius: 2px;
+      transition: transform 0.08s ease, filter 0.12s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .mc-btn:hover {
+      background: linear-gradient(180deg, #9aa9d6 0%, #7887bc 48%, #6573a8 100%);
+      color: #ffffc8;
+      border-color: #ffffff;
+      filter: brightness(1.08);
+    }
+
+    .mc-btn:active {
+      transform: translateY(2px);
+      box-shadow: inset 1px 1px 0px #333, inset -1px -1px 0px #aaa;
+    }
+
+    .menu-footer {
+      position: absolute;
+      bottom: 15px;
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      padding: 0 30px;
+      font-size: 13px;
+      color: #bfbfbf;
+      text-shadow: 1px 1px 2px #000;
+      font-family: var(--font-mono);
+    }
+
+    /* Server List / Multiplayer Screen */
+    #multiplayer-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 110;
+      background: var(--menu-dirt-texture);
+      background-size: 32px 32px, 32px 32px, 32px 32px, 32px 32px, 32px 32px, auto;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      gap: 12px;
+    }
+
+    #world-select-screen,
+    #connection-mode-screen,
+    #create-world-modal,
+    #options-screen,
+    #pause-screen {
+      background: var(--menu-dirt-texture);
+      background-size: 32px 32px, 32px 32px, 32px 32px, 32px 32px, 32px 32px, auto;
+      backdrop-filter: none;
+    }
+
+    .mp-title {
+      font-size: 28px;
+      font-family: var(--font-mono);
+      font-weight: bold;
+      margin-bottom: 2px;
+      color: #ffffff;
+      text-shadow: 2px 2px 0 #202020;
+      letter-spacing: 2px;
+    }
+
+    .mp-subtitle {
+      width: min(860px, calc(100vw - 40px));
+      color: #d0d5de;
+      font-family: var(--font-mono);
+      text-align: center;
+      font-size: 12px;
+      text-shadow: 1px 1px 0 #000;
+      margin-bottom: 8px;
+    }
+
+    .server-list-box {
+      width: min(860px, calc(100vw - 40px));
+      height: min(430px, calc(100vh - 300px));
+      min-height: 300px;
+      background: rgba(0, 0, 0, 0.58);
+      border: 3px solid #4c4c4c;
+      box-shadow: inset 0 0 0 2px rgba(255,255,255,0.04), 0 18px 50px rgba(0,0,0,0.45);
+      padding: 10px;
+      overflow-y: auto;
+      margin-bottom: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .server-list-header {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #f7e7a2;
+      padding: 7px 8px 3px;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    .server-list-header.secondary {
+      color: #a9c7ff;
+      margin-top: 6px;
+      border-top: 1px solid rgba(255,255,255,0.12);
+      padding-top: 12px;
+    }
+
+    .server-list-empty {
+      font-family: var(--font-mono);
+      color: #bfc6d8;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 14px;
+      text-align: center;
+    }
+
+    .server-list-empty.warning {
+      color: #ffd9a0;
+      border-color: rgba(255, 217, 160, 0.35);
+    }
+
+    .server-item {
+      --server-accent: #8ca0ff;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 13px 15px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.025));
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-left: 5px solid var(--server-accent);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.08s, box-shadow 0.15s;
+    }
+
+    .server-item:hover,
+    .server-item.selected {
+      border-color: rgba(255,255,255,0.55);
+      border-left-color: var(--server-accent);
+      background: linear-gradient(180deg, rgba(255,255,255,0.15), rgba(255,255,255,0.06));
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 8px 22px rgba(0,0,0,0.35);
+      transform: translateY(-1px);
+    }
+
+    .server-item.selected {
+      outline: 2px solid rgba(255,255,255,0.35);
+    }
+
+    .server-main {
+      min-width: 0;
+    }
+
+    .server-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .server-name {
+      font-weight: bold;
+      font-family: var(--font-mono);
+      color: #ffffff;
+      font-size: 15px;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    .server-badge {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: #061014;
+      background: var(--server-accent);
+      padding: 2px 7px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      font-weight: bold;
+    }
+
+    .server-desc,
+    .server-modes,
+    .server-address,
+    .server-players {
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: #bfc6d8;
+    }
+
+    .server-modes {
+      color: #f7e7a2;
+      margin-top: 4px;
+    }
+
+    .server-side {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 5px;
+      text-align: right;
+      max-width: 240px;
+    }
+
+    .server-players {
+      color: #8eff8e;
+      font-weight: bold;
+    }
+
+    .server-address {
+      color: #8d96a8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 240px;
+    }
+
+    .utility-card {
+      border-left-color: #f7e7a2;
+    }
+
+    .server-list-actions {
+      display: flex;
+      gap: 12px;
+      width: min(860px, calc(100vw - 40px));
+    }
+
+    .server-list-actions button {
+      flex: 1;
+    }
+
+    #server-link-modal {
+      position: absolute;
+      inset: 0;
+      z-index: 300;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.78);
+    }
+
+    .server-link-panel {
+      width: min(540px, calc(100vw - 40px));
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 24px;
+      background: #c6c6c6;
+      border: 4px solid #000;
+      box-shadow: inset 3px 3px 0 #fff, inset -3px -3px 0 #555, 0 18px 45px rgba(0,0,0,0.65);
+      color: #202020;
+      font-family: var(--font-mono);
+    }
+
+    .server-link-title {
+      color: #ffff55;
+      text-align: center;
+      font-size: 24px;
+      text-shadow: 2px 2px 0 #000;
+    }
+
+    .server-link-copy {
+      color: #222;
+      font-size: 14px;
+      line-height: 1.35;
+      text-align: center;
+    }
+
+    .server-link-field {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .server-link-field label,
+    .server-link-hint {
+      color: #303030;
+      font-size: 12px;
+    }
+
+    #server-link-input {
+      width: 100%;
+      min-height: 44px;
+      background: #111 !important;
+      border: 2px solid #000 !important;
+      box-shadow: inset 2px 2px 0 #050505, inset -2px -2px 0 #777 !important;
+      color: #fff !important;
+      padding: 10px 12px;
+      font-size: 15px;
+      font-family: var(--font-mono);
+      outline: none;
+    }
+
+    #server-link-input:focus {
+      box-shadow: inset 2px 2px 0 #050505, inset -2px -2px 0 #777, 0 0 0 2px #ffff55 !important;
+    }
+
+    .server-link-status {
+      color: #6a1b1b;
+      font-size: 13px;
+      min-height: 18px;
+      font-family: var(--font-mono);
+    }
+
+    .server-link-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .server-link-actions button {
+      flex: 1;
+    }
+
+    .auth-panel {
+      width: min(440px, calc(100vw - 40px));
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 24px;
+      background: #c6c6c6;
+      border: 4px solid #000;
+      box-shadow: inset 3px 3px 0 #fff, inset -3px -3px 0 #555, 0 18px 45px rgba(0,0,0,0.65);
+      color: #202020;
+      font-family: var(--font-mono);
+    }
+
+    .auth-title {
+      color: #ffff55;
+      text-align: center;
+      font-size: 28px;
+      text-shadow: 2px 2px 0 #000;
+    }
+
+    .auth-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .auth-tab {
+      min-height: 38px;
+      background: #777;
+      color: #fff;
+      border: 2px solid #000;
+      box-shadow: inset 2px 2px 0 rgba(255,255,255,0.45), inset -2px -2px 0 rgba(0,0,0,0.45);
+      font-family: var(--font-mono);
+      cursor: pointer;
+    }
+
+    .auth-tab.active {
+      background: #4d8cff;
+      color: #fff;
+    }
+
+    .auth-field {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .auth-field label,
+    #auth-status {
+      color: #303030;
+      font-size: 12px;
+    }
+
+    .auth-field input {
+      width: 100%;
+      min-height: 44px;
+      background: #111 !important;
+      border: 2px solid #000 !important;
+      box-shadow: inset 2px 2px 0 #050505, inset -2px -2px 0 #777 !important;
+      color: #fff !important;
+      padding: 10px 12px;
+      font-size: 15px;
+      font-family: var(--font-mono);
+      outline: none;
+    }
+
+    .auth-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .auth-actions button {
+      flex: 1;
+    }
+
+    .connection-choice-grid {
+      width: min(760px, calc(100vw - 40px));
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .connection-choice {
+      min-height: 150px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      text-align: left;
+    }
+
+    .connection-choice strong {
+      color: #ffffff;
+      font-size: 16px;
+      text-shadow: 2px 2px 0 #000;
+    }
+
+    .connection-choice span {
+      color: #d0d5de;
+      font-size: 12px;
+      line-height: 1.5;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .create-room-row {
+      display: grid;
+      grid-template-columns: minmax(130px, 0.8fr) minmax(190px, 1.1fr) minmax(150px, 0.8fr) 150px;
+      gap: 8px;
+      width: min(860px, calc(100vw - 40px));
+      margin-bottom: 4px;
+      background: rgba(0,0,0,0.34);
+      border: 1px solid rgba(255,255,255,0.10);
+      padding: 10px;
+    }
+
+    .create-room-row input,
+    .setting-item input[type="text"],
+    .setting-item select {
+      background: #050505;
+      border: 2px solid #555;
+      color: #fff;
+      padding: 10px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      outline: none;
+      border-radius: 2px;
+    }
+
+    .create-room-row input:focus,
+    .setting-item input[type="text"]:focus,
+    .setting-item select:focus {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 2px rgba(0,230,255,0.18);
+    }
+
+    @media (max-width: 780px) {
+      .connection-choice-grid,
+      .create-room-row,
+      .server-item {
+        grid-template-columns: 1fr;
+      }
+      .server-side {
+        align-items: flex-start;
+        text-align: left;
+        max-width: none;
+      }
+      .server-list-actions {
+        flex-direction: column;
+      }
+    }
+
+    /* Options Mode styling */
+    .options-mode .menu-column {
+      display: none !important;
+    }
+    .options-mode .menu-layout {
+      grid-template-columns: 1fr !important;
+    }
+    .options-mode #options-done-btn {
+      display: block !important;
+    }
+
+
+    /* ── Classic Minecraft UI pass ────────────────────────────────────────
+       A global override so every menu, inventory, minigame panel, modal, and
+       server screen shares the same square pixel-art UX language. */
+    :root {
+      --bg-glass: rgba(22, 22, 22, 0.92);
+      --bg-glass-heavy: rgba(8, 8, 8, 0.96);
+      --border-glass: #000000;
+      --border-active: #ffffff;
+      --color-primary: #ffff55;
+      --color-accent: #55ff55;
+      --menu-panel-bg: #c6c6c6;
+      --menu-panel-border: #000000;
+      --menu-soft-text: #3f3f3f;
+      --font-ui: var(--font-mono);
+    }
+
+    body, button, input, select, textarea {
+      font-family: var(--font-mono) !important;
+      image-rendering: pixelated;
+    }
+
+    .screen, .screen-overlay, .menu-screen, .overlay-panel,
+    #main-menu, #pause-screen, #options-screen,
+    #multiplayer-screen, #connection-mode-screen, #world-select-screen, #death-screen,
+    #inventory-container, .inventory-container, .inventory-panel,
+    .crafting-panel, .recipe-book-panel, .workstation-screen,
+    .server-list, .server-item, .modal, .modal-content,
+    .minigame-menu, .minigame-panel, .minigame-card,
+    .navigator-menu, .navigator-panel, .chat-panel {
+      border-radius: 0 !important;
+      backdrop-filter: none !important;
+      background: #c6c6c6 !important;
+      color: #202020 !important;
+      border: 4px solid #000 !important;
+      box-shadow:
+        inset 3px 3px 0 #ffffff,
+        inset -3px -3px 0 #555555,
+        0 0 0 2px #1a1a1a !important;
+      text-shadow: none !important;
+    }
+
+    #main-menu-screen {
+      border: 0 !important;
+      box-shadow: none !important;
+      color: #ffffff !important;
+      background: linear-gradient(rgba(6, 8, 12, 0.08), rgba(6, 8, 12, 0.34)) !important;
+      backdrop-filter: blur(1px) !important;
+    }
+
+    .screen h1, .screen h2, .screen h3,
+    .screen-overlay h1, .screen-overlay h2, .screen-overlay h3,
+    .menu-title, .panel-title, .inventory-title {
+      color: #ffff55 !important;
+      letter-spacing: 1px !important;
+      text-shadow: 2px 2px 0 #000 !important;
+      -webkit-text-stroke: 0 !important;
+    }
+
+    button, .button, .mc-button, .menu-button, .ui-button,
+    .server-connect, .navigator-button, .minigame-card,
+    input[type="button"], input[type="submit"] {
+      border-radius: 0 !important;
+      min-height: 34px;
+      background: #777777 !important;
+      color: #ffffff !important;
+      border: 2px solid #000 !important;
+      box-shadow:
+        inset 2px 2px 0 #bdbdbd,
+        inset -2px -2px 0 #333333 !important;
+      text-shadow: 2px 2px 0 #000 !important;
+      transition: none !important;
+    }
+
+    button:hover, .button:hover, .mc-button:hover, .menu-button:hover,
+    .ui-button:hover, .server-connect:hover, .navigator-button:hover,
+    .minigame-card:hover {
+      background: #8b8b8b !important;
+      color: #ffff55 !important;
+      transform: none !important;
+      box-shadow:
+        inset 2px 2px 0 #ffffff,
+        inset -2px -2px 0 #222222,
+        0 0 0 2px #ffff55 !important;
+    }
+
+    input, select, textarea, .text-input, .server-input {
+      border-radius: 0 !important;
+      background: #1b1b1b !important;
+      color: #ffffff !important;
+      border: 2px solid #000 !important;
+      box-shadow: inset 2px 2px 0 #050505, inset -2px -2px 0 #777 !important;
+    }
+
+    .slot, .inventory-slot, .hotbar-slot, .crafting-slot,
+    .recipe-slot, .recipe-book-cell, .item-slot {
+      border-radius: 0 !important;
+      background: #8b8b8b !important;
+      border: 2px solid #000 !important;
+      box-shadow: inset 2px 2px 0 #373737, inset -2px -2px 0 #ffffff !important;
+    }
+
+    .slot.selected, .inventory-slot.selected, .hotbar-slot.selected,
+    .item-slot.selected, .active, .selected {
+      outline: 3px solid #ffffff !important;
+      outline-offset: -3px !important;
+      box-shadow:
+        inset 2px 2px 0 #ffffff,
+        inset -2px -2px 0 #373737,
+        0 0 0 2px #000 !important;
+    }
+
+    .tooltip, .item-tooltip, #block-info, #coords-display, #debug-panel,
+    #chat-box, #chat-input-container {
+      border-radius: 0 !important;
+      background: rgba(0, 0, 0, 0.72) !important;
+      color: #ffffff !important;
+      border: 2px solid #000 !important;
+      text-shadow: 2px 2px 0 #000 !important;
+    }
+
+    @keyframes logoSpin {
+      0% { transform: scale(0.3) rotate(-180deg); opacity: 0; }
+      50% { transform: scale(1.1) rotate(15deg); opacity: 1; }
+      100% { transform: scale(1) rotate(0deg); opacity: 1; }
+    }
+    @keyframes puffRise {
+      0% { transform: translateY(0) scale(0.6); opacity: 0; }
+      30% { opacity: 0.8; }
+      100% { transform: translateY(-60px) scale(1.8); opacity: 0; }
+    }
+    @keyframes textFadeIn {
+      0% { opacity: 0; letter-spacing: -6px; filter: blur(10px); }
+      100% { opacity: 1; letter-spacing: 2px; filter: blur(0); }
+    }
+    @keyframes subtextFadeIn {
+      0% { opacity: 0; }
+      100% { opacity: 1; }
+    }
+
+
+
+    /* iOS / mobile-only Minecraft-style touch controls. These never appear on desktop. */
+    html, body, #canvas-container, #mobile-controls {
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #mobile-controls {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9999;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      touch-action: none;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    .mobile-pe-btn {
+      pointer-events: auto;
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+      border: 2px solid rgba(0, 0, 0, 0.68);
+      background: rgba(42, 42, 42, 0.38);
+      color: rgba(255, 255, 255, 0.92);
+      font-family: var(--font-mono);
+      font-size: 18px;
+      font-weight: 900;
+      text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.85);
+      box-shadow: inset 2px 2px 0 rgba(255,255,255,0.20), inset -2px -2px 0 rgba(0,0,0,0.42);
+      backdrop-filter: blur(2px);
+      -webkit-backdrop-filter: blur(2px);
+    }
+
+    .mobile-pe-btn:active, .mobile-pe-btn.pressed {
+      background: rgba(255, 255, 255, 0.32);
+      transform: translateY(1px) scale(0.98);
+    }
+
+    #mobile-dpad {
+      position: absolute;
+      left: max(16px, env(safe-area-inset-left));
+      bottom: max(18px, env(safe-area-inset-bottom));
+      width: 178px;
+      height: 178px;
+      pointer-events: auto;
+      touch-action: none;
+    }
+
+    #mobile-dpad .mobile-pe-btn {
+      position: absolute;
+      width: 56px;
+      height: 56px;
+      border-radius: 4px;
+    }
+
+    #mobile-btn-forward,
+    #mobile-btn-left,
+    #mobile-btn-right,
+    #mobile-btn-backward {
+      pointer-events: none;
+    }
+
+    #mobile-btn-sneak {
+      pointer-events: auto;
+    }
+
+    #mobile-btn-forward { left: 61px; top: 0; }
+    #mobile-btn-left { left: 0; top: 61px; }
+    #mobile-btn-backward { left: 61px; top: 122px; }
+    #mobile-btn-right { left: 122px; top: 61px; }
+    #mobile-btn-sneak { left: 61px; top: 61px; font-size: 13px; }
+
+    #mobile-action-stack {
+      position: absolute;
+      right: max(18px, env(safe-area-inset-right));
+      bottom: max(36px, env(safe-area-inset-bottom));
+      display: grid;
+      grid-template-columns: 62px 62px;
+      grid-template-rows: 62px 62px 62px;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    #mobile-action-stack .mobile-pe-btn {
+      width: 62px;
+      height: 62px;
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1.05;
+    }
+
+    #mobile-btn-jump { grid-column: 2; grid-row: 1 / span 2; height: 134px !important; font-size: 18px !important; }
+    #mobile-btn-attack { grid-column: 1; grid-row: 1; }
+    #mobile-btn-place { grid-column: 1; grid-row: 2; }
+    #mobile-btn-inventory { grid-column: 1; grid-row: 3; }
+    #mobile-hotbar-touch { grid-column: 2; grid-row: 3; display: flex; gap: 6px; width: 62px; height: 62px; pointer-events: auto; }
+    #mobile-hotbar-touch .mobile-pe-btn { width: 28px; height: 62px; font-size: 14px; }
+
+    #mobile-top-buttons {
+      position: absolute;
+      top: max(8px, env(safe-area-inset-top));
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      pointer-events: auto;
+    }
+
+    #mobile-top-buttons .mobile-pe-btn {
+      width: 38px;
+      height: 34px;
+      border-radius: 3px;
+      font-size: 15px;
+    }
+
+    #mobile-look-zone {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    body.mobile-controls-active #mobile-controls {
+      display: block !important;
+    }
+
+    body:not(.mobile-controls-active) #mobile-controls {
+      display: none !important;
+    }
+
+    body:not(.mobile-controls-active) .mobile-pe-btn {
+      display: none !important;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      body:not(.force-mobile-controls) #mobile-controls,
+      body:not(.force-mobile-controls) #mobile-toggle-btn {
+        display: none !important;
+      }
+    }
+
+
+    /* iOS WebKit polish: compact menus, safe-area spacing, and zero accidental selection. */
+    html.ios-native,
+    html.ios-native body {
+      width: 100dvw;
+      height: 100dvh;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+
+    html.ios-native body,
+    html.ios-native button,
+    html.ios-native input,
+    html.ios-native select,
+    html.ios-native textarea {
+      font-size-adjust: none;
+    }
+
+    html.ios-native #main-menu-screen,
+    html.ios-native #multiplayer-screen,
+    html.ios-native #connection-mode-screen,
+    html.ios-native #world-select-screen,
+    html.ios-native #options-screen,
+    html.ios-native #pause-screen,
+    html.ios-native .screen-overlay {
+      width: 100dvw !important;
+      height: 100dvh !important;
+      max-width: 100dvw !important;
+      max-height: 100dvh !important;
+      overflow: hidden !important;
+      padding-left: max(10px, env(safe-area-inset-left)) !important;
+      padding-right: max(10px, env(safe-area-inset-right)) !important;
+      padding-top: max(8px, env(safe-area-inset-top)) !important;
+      padding-bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    }
+
+    html.ios-native #multiplayer-screen {
+      justify-content: flex-start !important;
+      gap: 6px !important;
+      padding-top: max(8px, env(safe-area-inset-top)) !important;
+    }
+
+    html.ios-native .mp-title {
+      font-size: clamp(16px, 4.6dvh, 22px) !important;
+      line-height: 1 !important;
+      margin: 0 !important;
+    }
+
+    html.ios-native .mp-subtitle {
+      width: min(96dvw, 860px) !important;
+      max-height: 2.6em !important;
+      overflow: hidden !important;
+      font-size: clamp(8px, 2.1dvh, 11px) !important;
+      line-height: 1.15 !important;
+      margin: 0 0 2px !important;
+    }
+
+    html.ios-native .create-room-row {
+      width: min(96dvw, 920px) !important;
+      display: grid !important;
+      grid-template-columns: minmax(82px, 0.9fr) minmax(120px, 1.35fr) minmax(110px, 1.05fr) minmax(96px, 0.72fr) !important;
+      gap: 6px !important;
+      align-items: stretch !important;
+      margin: 0 !important;
+    }
+
+    html.ios-native .create-room-row input,
+    html.ios-native .create-room-row button,
+    html.ios-native .server-list-actions button,
+    html.ios-native .mc-btn {
+      min-height: 32px !important;
+      height: 34px !important;
+      padding: 5px 7px !important;
+      font-size: clamp(8px, 2.1dvh, 11px) !important;
+      line-height: 1.05 !important;
+      letter-spacing: 0.4px !important;
+    }
+
+    html.ios-native .server-list-box,
+    html.ios-native #server-list,
+    html.ios-native #world-list {
+      width: min(96dvw, 920px) !important;
+      height: calc(100dvh - 150px) !important;
+      min-height: 130px !important;
+      max-height: calc(100dvh - 150px) !important;
+      padding: 6px !important;
+      gap: 5px !important;
+      margin: 0 !important;
+      overflow-y: auto !important;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    html.ios-native .server-item {
+      grid-template-columns: minmax(0, 1fr) auto !important;
+      gap: 8px !important;
+      padding: 7px 8px !important;
+      border-left-width: 4px !important;
+      min-height: 56px !important;
+    }
+
+    html.ios-native .server-name { font-size: clamp(10px, 2.6dvh, 13px) !important; }
+    html.ios-native .server-badge { font-size: 8px !important; padding: 1px 4px !important; }
+    html.ios-native .server-desc { display: none !important; }
+    html.ios-native .server-modes,
+    html.ios-native .server-address,
+    html.ios-native .server-players,
+    html.ios-native .server-list-header {
+      font-size: clamp(8px, 2.0dvh, 10px) !important;
+      line-height: 1.12 !important;
+    }
+
+    html.ios-native .server-side { max-width: 190px !important; gap: 2px !important; }
+    html.ios-native .server-list-actions {
+      width: min(96dvw, 920px) !important;
+      gap: 8px !important;
+      margin-top: 2px !important;
+    }
+
+    html.ios-native #pause-container,
+    html.ios-native .menu-layout,
+    html.ios-native .menu-panel,
+    html.ios-native #inventory-container,
+    html.ios-native .inventory-container,
+    html.ios-native .workstation-screen,
+    html.ios-native .recipe-book-panel,
+    html.ios-native .crafting-panel {
+      max-width: calc(100dvw - max(20px, env(safe-area-inset-left) + env(safe-area-inset-right))) !important;
+      max-height: calc(100dvh - max(18px, env(safe-area-inset-top) + env(safe-area-inset-bottom))) !important;
+      overflow: auto !important;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    html.ios-native #mobile-controls,
+    html.ios-native #mobile-controls * {
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-touch-callout: none !important;
+    }
+
+    @media (max-width: 760px), (max-height: 430px) {
+      html.ios-native #mobile-dpad {
+        width: 154px;
+        height: 154px;
+        left: max(10px, env(safe-area-inset-left));
+        bottom: max(10px, env(safe-area-inset-bottom));
+      }
+      html.ios-native #mobile-dpad .mobile-pe-btn {
+        width: 48px;
+        height: 48px;
+        font-size: 14px;
+      }
+      html.ios-native #mobile-btn-forward { left: 53px; top: 0; }
+      html.ios-native #mobile-btn-left { left: 0; top: 53px; }
+      html.ios-native #mobile-btn-sneak { left: 53px; top: 53px; font-size: 10px; }
+      html.ios-native #mobile-btn-right { left: 106px; top: 53px; }
+      html.ios-native #mobile-btn-backward { left: 53px; top: 106px; }
+      html.ios-native #mobile-action-stack {
+        right: max(10px, env(safe-area-inset-right));
+        bottom: max(14px, env(safe-area-inset-bottom));
+        grid-template-columns: 52px 52px;
+        grid-template-rows: 52px 52px 52px;
+        gap: 7px;
+      }
+      html.ios-native #mobile-action-stack .mobile-pe-btn {
+        width: 52px;
+        height: 52px;
+        font-size: 11px;
+      }
+      html.ios-native #mobile-btn-jump { height: 111px !important; }
+      html.ios-native #mobile-hotbar-touch { width: 52px; height: 52px; gap: 4px; }
+      html.ios-native #mobile-hotbar-touch .mobile-pe-btn { width: 24px; height: 52px; }
+      html.ios-native #bottom-hud { bottom: max(8px, env(safe-area-inset-bottom)); transform: translateX(-50%) scale(0.84); transform-origin: bottom center; }
+      html.ios-native #chat-overlay { left: max(8px, env(safe-area-inset-left)); bottom: 82px; width: min(300px, 50dvw); }
+    }
+  </style>
+</head>
+<body>
+  <!-- Vapour Engine Splash Screen -->
+  <div id="vapour-engine-splash" style="position: fixed; inset: 0; background: #0a0a0f; z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; user-select: none;">
+    <div class="vapour-logo-container" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;">
+      <div class="vapour-logo" style="width: 100px; height: 100px; border: 8px solid #00e6ff; box-shadow: 0 0 30px rgba(0, 230, 255, 0.4); display: flex; align-items: center; justify-content: center; font-family: 'Press Start 2P', monospace; font-size: 48px; color: #00e6ff; font-weight: 900; animation: logoSpin 2.5s cubic-bezier(0.25, 1, 0.5, 1) forwards; position: relative;">
+        V
+        <div class="steam-puff" style="position: absolute; width: 20px; height: 20px; background: rgba(0, 230, 255, 0.25); border-radius: 50%; top: -30px; animation: puffRise 1.8s infinite ease-out;"></div>
+        <div class="steam-puff" style="position: absolute; width: 15px; height: 15px; background: rgba(0, 230, 255, 0.2); border-radius: 50%; top: -30px; left: 20px; animation: puffRise 1.8s infinite ease-out 0.6s;"></div>
+        <div class="steam-puff" style="position: absolute; width: 25px; height: 25px; background: rgba(0, 230, 255, 0.15); border-radius: 50%; top: -30px; right: 20px; animation: puffRise 1.8s infinite ease-out 1.2s;"></div>
+      </div>
+      <div class="vapour-text" style="font-family: 'Press Start 2P', monospace; font-size: 24px; color: #ffffff; letter-spacing: 2px; text-shadow: 0 4px 10px rgba(0,230,255,0.5); text-align: center; animation: textFadeIn 1.8s ease-out forwards;">
+        VAPOUR ENGINE
+      </div>
+      <div class="vapour-subtext" style="font-family: 'VT323', monospace; font-size: 18px; color: #8888aa; letter-spacing: 1px; animation: subtextFadeIn 2.2s ease-out forwards; animation-delay: 0.6s; opacity: 0; text-align: center;">
+        (C) 2026 Vapour Software. All rights reserved.
+      </div>
+    </div>
+  </div>
+  <!-- Water submersion overlay -->
+  <div id="water-overlay" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,100,255,0.38);z-index:90;display:none;pointer-events:none;backdrop-filter:blur(1px);"></div>
+
+  <!-- Three.js Canvas Container -->
+  <div id="canvas-container"></div>
+
+  <div id="loading-screen">
+    <div class="loading-panel">
+      <div id="loading-title" class="loading-title">Loading world</div>
+      <div class="loading-bar"><div id="loading-bar-fill"></div></div>
+      <div id="loading-status">Preparing spawn area...</div>
+    </div>
+  </div>
+
+  <!-- HUD overlay (crosshair, health, inventory hotbar, etc) -->
+  <div id="hud-overlay">
+    <div id="debug-panel">
+      <div class="debug-column">
+        <div class="debug-line">CubeGame / Vapour Engine</div>
+        <div class="debug-line">FPS: <span id="debug-fps">0</span> / target <span id="debug-target-fps">display</span> / refresh <span id="debug-refresh">estimating</span></div>
+        <div class="debug-line">Frame time: <span id="debug-frame-ms">0.0</span> ms · Physics: <span id="debug-physics-rate">20</span> Hz</div>
+        <div class="debug-line">Chunks: <span id="debug-chunks">0</span> · Mesh queue: <span id="debug-worker-queue">0</span> · Entities: <span id="debug-entities">0</span></div>
+        <div class="debug-line">XYZ: <span id="debug-pos">0.0 / 0.0 / 0.0</span></div>
+        <div class="debug-line">Block: <span id="debug-block">0 0 0</span></div>
+        <div class="debug-line">Chunk: <span id="debug-chunk">0 0 0</span> in <span id="debug-chunk-local">0 0 0</span></div>
+        <div class="debug-line">Facing: <span id="debug-facing">south</span></div>
+        <div class="debug-line">Biome: <span id="debug-biome">unknown</span> · Dimension: <span id="debug-dimension">overworld</span></div>
+        <div class="debug-line">Seed: <span id="debug-seed">0</span> · Time: <span id="debug-time">day</span> · Weather: <span id="debug-weather">clear</span></div>
+        <div class="debug-line">Targeted Block: <span id="debug-target-block">none</span></div>
+      </div>
+      <div class="debug-column right">
+        <div class="debug-line">Host: <span id="debug-host">Browser</span> · Platform: <span id="debug-platform">Detecting...</span></div>
+        <div class="debug-line">Display: <span id="debug-display">0x0</span></div>
+        <div class="debug-line">Renderer: <span id="debug-renderer">WebGL</span></div>
+        <div class="debug-line">Memory: <span id="debug-memory">n/a</span></div>
+        <div class="debug-line">Network: <span id="debug-network-mode">Singleplayer</span> · Room: <span id="debug-room">local</span></div>
+        <div class="debug-line">Ping: <span id="debug-ping">0ms</span> · Server tick: <span id="debug-server-tick">n/a</span></div>
+        <div class="debug-line">Players: <span id="debug-players">1</span> · Mob authority: <span id="debug-mob-authority">local</span></div>
+        <div class="debug-line">Sync: <span id="debug-sync-state">offline</span></div>
+        <div class="debug-line" id="debug-crownforge-line" style="display:none">CrownForge: <span id="debug-crownforge">none</span></div>
+        <div class="debug-line">Input: Shift=sprint Ctrl=crouch · F3 hides this</div>
+      </div>
+    </div>
+
+    <!-- Active Effects Panel -->
+    <div id="active-effects-panel"></div>
+
+    <div id="bedwars-shop-shortcuts" aria-label="BedWars shop shortcuts">
+      <button id="bedwars-open-item-shop" class="bedwars-shop-button" type="button">Open Item Shop</button>
+      <button id="bedwars-open-upgrade-shop" class="bedwars-shop-button" type="button">Team Upgrades</button>
+      <div id="bedwars-shop-hint">No villager aiming needed — use these buttons.</div>
+    </div>
+
+    <!-- Crosshair in the exact center -->
+    <div id="crosshair"></div>
+
+    <div id="bottom-hud">
+      <div id="player-stats">
+        <div class="stat-container">
+          <div id="health-bar" class="stat-icons health-icons" aria-label="Health"></div>
+        </div>
+        <div class="stat-container">
+          <div id="hunger-bar" class="stat-icons hunger-icons" aria-label="Hunger"></div>
+        </div>
+        <div class="stat-container" id="armor-container" style="display: none; transition: all 0.2s;">
+          <span>ARM</span>
+          <div class="stat-bar-outer">
+            <div id="armor-bar" class="stat-bar-inner" style="background: #a0a0a0; box-shadow: 0 0 8px rgba(160, 160, 160, 0.6); width: 0%;"></div>
+          </div>
+        </div>
+        <div class="stat-container" id="oxygen-container" style="display: none;">
+          <span>O2</span>
+          <div class="stat-bar-outer">
+            <div id="oxygen-bar" class="stat-bar-inner" style="background: #00bfff; box-shadow: 0 0 8px rgba(0, 191, 255, 0.6); width: 100%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- XP Bar Overlay -->
+      <div id="xp-container" style="display: flex; flex-direction: column; align-items: center; width: 350px; margin: 0 auto 5px auto; pointer-events: none;">
+        <div id="xp-level" style="color: #45f345; font-family: 'Share Tech Mono', monospace; font-size: 16px; font-weight: bold; text-shadow: 1px 1px 2px black; margin-bottom: 2px; transition: transform 0.15s;">0</div>
+        <div style="width: 100%; height: 5px; background: rgba(0, 0, 0, 0.55); border: 1px solid #111; border-radius: 1px;">
+          <div id="xp-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #45f345, #9dff9d); transition: width 0.3s;"></div>
+        </div>
+      </div>
+
+      <!-- Active Item Name popup -->
+      <div id="hotbar-item-name" style="text-align: center; color: white; font-family: 'Share Tech Mono', monospace; font-size: 16px; margin-bottom: 8px; text-shadow: 1px 1px 2px black; pointer-events: none; opacity: 0; transition: opacity 0.15s;">&nbsp;</div>
+
+      <!-- Action Hotbar & Off-hand -->
+      <div style="display: flex; align-items: center; gap: 12px; pointer-events: auto;">
+        <div id="hotbar">
+          <div class="slot active" data-slot="0"></div>
+          <div class="slot" data-slot="1"></div>
+          <div class="slot" data-slot="2"></div>
+          <div class="slot" data-slot="3"></div>
+          <div class="slot" data-slot="4"></div>
+          <div class="slot" data-slot="5"></div>
+          <div class="slot" data-slot="6"></div>
+          <div class="slot" data-slot="7"></div>
+          <div class="slot" data-slot="8"></div>
+        </div>
+        <div style="display: flex; background: var(--bg-glass); backdrop-filter: blur(12px); border: 1.5px solid var(--border-glass); padding: 6px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);">
+          <div class="slot" id="hud-offhand-slot" data-index="36" data-type="hud-offhand" style="border-color: #5a2d82;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Log and Input Overlay -->
+  <div id="chat-overlay">
+    <div id="chat-messages"></div>
+    <input type="text" id="chat-input" placeholder="Type a message &amp; press Enter..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="pointer-events: auto; -webkit-user-select: text; user-select: text;">
+  </div>
+
+  <!-- Screen UI: Inventory Overlay -->
+  <div id="inventory-screen" class="screen-overlay">
+    <div id="inventory-container">
+      <!-- Left: Player Inventory & Hotbar -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="inventory-grid-3x9" class="inventory-grid">
+          <!-- Dynamically populated 3 rows of 9 slots -->
+        </div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="inventory-hotbar-mirror" class="inventory-hotbar-grid">
+          <!-- Dynamically populated 9 hotbar slots -->
+        </div>
+      </div>
+
+      <!-- Middle: Armor Slots -->
+      <div class="inventory-section" style="justify-content: center; align-items: center; min-width: 80px;">
+        <div class="inventory-section-title" style="text-align: center;">Armor</div>
+        <div style="display: flex; flex-direction: column; gap: 6px; align-items: center; background: rgba(0, 0, 0, 0.25); padding: 8px; border-radius: 8px; border: 1.5px dashed rgba(255,255,255,0.15);">
+          <div class="slot" data-index="37" data-type="inventory" style="width: 48px; height: 48px; border-color: #4ee2ec; background: rgba(78, 226, 236, 0.05);" title="Helmet Slot"></div>
+          <div class="slot" data-index="38" data-type="inventory" style="width: 48px; height: 48px; border-color: #4ee2ec; background: rgba(78, 226, 236, 0.05);" title="Chestplate Slot"></div>
+          <div class="slot" data-index="39" data-type="inventory" style="width: 48px; height: 48px; border-color: #4ee2ec; background: rgba(78, 226, 236, 0.05);" title="Leggings Slot"></div>
+          <div class="slot" data-index="40" data-type="inventory" style="width: 48px; height: 48px; border-color: #4ee2ec; background: rgba(78, 226, 236, 0.05);" title="Boots Slot"></div>
+        </div>
+      </div>
+
+      <!-- Right: Crafting System & Off-hand -->
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Assembly Grid</div>
+        <div class="crafting-container">
+          <div id="crafting-grid" class="crafting-grid-2x2">
+            <!-- Dynamically populated 2x2 crafting slots -->
+          </div>
+          <div class="crafting-arrow">➜</div>
+          <div class="crafting-output">
+            <div id="crafting-result-slot" class="slot" style="width: 58px; height: 58px; border-color: var(--color-primary);"></div>
+          </div>
+        </div>
+        <div class="inventory-section-title" style="text-align: center; margin-top: 15px;">Shield / Off-Hand</div>
+        <div style="display: flex; justify-content: center;">
+          <div class="slot" data-index="36" data-type="inventory" style="width: 54px; height: 54px; border-color: #5a2d82; background: rgba(90, 45, 130, 0.08);"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Crafting Table Overlay (3x3 grid) -->
+  <div id="crafting-table-screen" class="screen-overlay">
+    <div class="inventory-container">
+      <!-- Left: Player Inventory & Hotbar -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="ct-inv-grid" class="inventory-grid">
+          <!-- Dynamically populated 3 rows of 9 slots -->
+        </div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="ct-hotbar-grid" class="inventory-hotbar-grid">
+          <!-- Dynamically populated 9 hotbar slots -->
+        </div>
+      </div>
+
+      <!-- Right: Crafting Table Grid -->
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Crafting Table (3×3)</div>
+        <div class="crafting-container">
+          <div id="ct-crafting-grid" class="crafting-grid-3x3">
+            <!-- Dynamically populated 3x3 crafting slots -->
+          </div>
+          <div class="crafting-arrow">➜</div>
+          <div class="crafting-output">
+            <div id="ct-result-slot" class="slot" style="width: 58px; height: 58px; border-color: var(--color-primary);"></div>
+          </div>
+        </div>
+        <button id="ct-close-btn" class="mc-btn" style="margin-top: 10px;">Close Table</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Chest Storage Overlay (3x9 chest + player inv) -->
+  <div id="chest-screen" class="screen-overlay">
+    <div class="inventory-container">
+      <!-- Left: Chest Inventory (3x9) -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Chest Storage</div>
+        <div id="chest-inv-grid" class="inventory-grid">
+          <!-- Dynamically populated 3 rows of 9 slots -->
+        </div>
+      </div>
+
+      <!-- Right: Player Inventory & Hotbar -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Player Inventory</div>
+        <div id="chest-player-inv" class="inventory-grid">
+          <!-- Dynamically populated 3 rows of 9 slots -->
+        </div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="chest-player-hotbar" class="inventory-hotbar-grid">
+          <!-- Dynamically populated 9 hotbar slots -->
+        </div>
+        <button id="chest-close-btn" class="mc-btn" style="margin-top: 10px; width: 100%;">Close Chest</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Furnace Overlay -->
+  <div id="furnace-screen" class="screen-overlay">
+    <div class="inventory-container">
+      <!-- Left: Player Inventory & Hotbar -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="furnace-player-inv" class="inventory-grid">
+          <!-- Dynamically populated 3 rows of 9 slots -->
+        </div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="furnace-player-hotbar" class="inventory-hotbar-grid">
+          <!-- Dynamically populated 9 hotbar slots -->
+        </div>
+      </div>
+
+      <!-- Right: Furnace Slots and Progress -->
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Furnace</div>
+        <div class="furnace-container" style="display: flex; align-items: center; gap: 20px; background: rgba(0, 0, 0, 0.4); padding: 20px; border-radius: 8px; border: 2px solid var(--color-primary);">
+          <!-- Vertical column for Input and Fuel -->
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 15px;">
+            <div id="furnace-input-slot" class="slot" data-type="furnace-slot" data-index="0" style="width: 44px; height: 44px;"></div>
+            <!-- Burning flame indicator -->
+            <div id="furnace-flame" style="width: 28px; height: 28px; font-size: 24px; color: #ff6600; text-align: center; line-height: 28px; transition: opacity 0.2s;">🔥</div>
+            <div id="furnace-fuel-slot" class="slot" data-type="furnace-slot" data-index="1" style="width: 44px; height: 44px;"></div>
+          </div>
+          
+          <!-- Middle arrow and progress indicator -->
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 5px;">
+            <div id="furnace-progress-arrow" style="font-size: 32px; color: #aaaaaa; position: relative;">
+              ➜
+              <!-- Progress fill mask overlay -->
+              <div id="furnace-progress-fill" style="position: absolute; top: 0; left: 0; width: 0%; height: 100%; color: #ffcc00; overflow: hidden; pointer-events: none;">➜</div>
+            </div>
+            <!-- Simple status/percentage text -->
+            <div id="furnace-status-text" style="font-size: 11px; color: #ffffff; font-family: monospace;">Idle</div>
+          </div>
+
+          <!-- Right side: Output slot -->
+          <div style="display: flex; flex-direction: column; align-items: center;">
+            <div id="furnace-output-slot" class="slot" data-type="furnace-slot" data-index="2" style="width: 58px; height: 58px; border-color: var(--color-primary);"></div>
+          </div>
+        </div>
+        <button id="furnace-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Furnace</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Blast Furnace Overlay -->
+  <div id="blast-furnace-screen" class="screen-overlay">
+    <div class="inventory-container">
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="blast-furnace-player-inv" class="inventory-grid"></div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="blast-furnace-player-hotbar" class="inventory-hotbar-grid"></div>
+      </div>
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Blast Furnace</div>
+        <div class="furnace-container" style="display: flex; align-items: center; gap: 20px; background: rgba(0, 0, 0, 0.4); padding: 20px; border-radius: 8px; border: 2px solid var(--color-primary);">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 15px;">
+            <div id="blast-furnace-input-slot" class="slot" data-type="blast-furnace-slot" data-index="0" style="width: 44px; height: 44px;"></div>
+            <div id="blast-furnace-flame" style="width: 28px; height: 28px; font-size: 24px; color: #ff6600; text-align: center; line-height: 28px; transition: opacity 0.2s;">🔥</div>
+            <div id="blast-furnace-fuel-slot" class="slot" data-type="blast-furnace-slot" data-index="1" style="width: 44px; height: 44px;"></div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 5px;">
+            <div id="blast-furnace-progress-arrow" style="font-size: 32px; color: #aaaaaa; position: relative;">
+              ➜
+              <div id="blast-furnace-progress-fill" style="position: absolute; top: 0; left: 0; width: 0%; height: 100%; color: #ffcc00; overflow: hidden; pointer-events: none;">➜</div>
+            </div>
+            <div id="blast-furnace-status-text" style="font-size: 11px; color: #ffffff; font-family: monospace;">Idle</div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center;">
+            <div id="blast-furnace-output-slot" class="slot" data-type="blast-furnace-slot" data-index="2" style="width: 58px; height: 58px; border-color: var(--color-primary);"></div>
+          </div>
+        </div>
+        <button id="blast-furnace-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Blast Furnace</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Smoker Overlay -->
+  <div id="smoker-screen" class="screen-overlay">
+    <div class="inventory-container">
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="smoker-player-inv" class="inventory-grid"></div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="smoker-player-hotbar" class="inventory-hotbar-grid"></div>
+      </div>
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Smoker</div>
+        <div class="furnace-container" style="display: flex; align-items: center; gap: 20px; background: rgba(0, 0, 0, 0.4); padding: 20px; border-radius: 8px; border: 2px solid var(--color-primary);">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 15px;">
+            <div id="smoker-input-slot" class="slot" data-type="smoker-slot" data-index="0" style="width: 44px; height: 44px;"></div>
+            <div id="smoker-flame" style="width: 28px; height: 28px; font-size: 24px; color: #ff6600; text-align: center; line-height: 28px; transition: opacity 0.2s;">🔥</div>
+            <div id="smoker-fuel-slot" class="slot" data-type="smoker-slot" data-index="1" style="width: 44px; height: 44px;"></div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 5px;">
+            <div id="smoker-progress-arrow" style="font-size: 32px; color: #aaaaaa; position: relative;">
+              ➜
+              <div id="smoker-progress-fill" style="position: absolute; top: 0; left: 0; width: 0%; height: 100%; color: #ffcc00; overflow: hidden; pointer-events: none;">➜</div>
+            </div>
+            <div id="smoker-status-text" style="font-size: 11px; color: #ffffff; font-family: monospace;">Idle</div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center;">
+            <div id="smoker-output-slot" class="slot" data-type="smoker-slot" data-index="2" style="width: 58px; height: 58px; border-color: var(--color-primary);"></div>
+          </div>
+        </div>
+        <button id="smoker-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Smoker</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Stonecutter Overlay -->
+  <div id="stonecutter-screen" class="screen-overlay">
+    <div class="inventory-container">
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="stonecutter-player-inv" class="inventory-grid"></div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="stonecutter-player-hotbar" class="inventory-hotbar-grid"></div>
+      </div>
+      <div class="inventory-section" style="justify-content: center; min-width: 320px;">
+        <div class="inventory-section-title" style="text-align: center;">Stonecutter</div>
+        <div style="display: flex; gap: 15px; background: rgba(0, 0, 0, 0.45); padding: 15px; border-radius: 12px; border: 2px solid var(--color-primary); box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+            <span style="font-size: 10px; color: #a0a0c0; font-family: monospace;">Input</span>
+            <div id="stonecutter-input-slot" class="slot" data-type="stonecutter-slot" data-index="0" style="width: 48px; height: 48px;"></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 4px; flex-grow: 1;">
+            <span style="font-size: 10px; color: #a0a0c0; font-family: monospace;">Carving Recipes</span>
+            <div id="stonecutter-recipe-list" style="width: 160px; height: 120px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 2px solid #555; border-radius: 6px; padding: 6px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; align-content: start;">
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+            <span style="font-size: 10px; color: #a0a0c0; font-family: monospace;">Output</span>
+            <div id="stonecutter-output-slot" class="slot" data-type="stonecutter-slot" data-index="1" style="width: 58px; height: 58px; border-color: var(--color-primary);"></div>
+          </div>
+        </div>
+        <button id="stonecutter-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Stonecutter</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Loom Overlay -->
+  <div id="loom-screen" class="screen-overlay">
+    <div class="inventory-container">
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="loom-player-inv" class="inventory-grid"></div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="loom-player-hotbar" class="inventory-hotbar-grid"></div>
+      </div>
+      <div class="inventory-section" style="justify-content: center; min-width: 350px;">
+        <div class="inventory-section-title" style="text-align: center;">Loom</div>
+        <div style="display: flex; gap: 15px; background: rgba(0, 0, 0, 0.45); padding: 15px; border-radius: 12px; border: 2px solid var(--color-primary); box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
+          <div style="display: flex; flex-direction: column; gap: 10px; justify-content: center;">
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 3px;">
+              <span style="font-size: 9px; color: #a0a0c0; font-family: monospace;">Banner</span>
+              <div id="loom-banner-slot" class="slot" data-type="loom-slot" data-index="0" style="width: 42px; height: 42px;"></div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 3px;">
+              <span style="font-size: 9px; color: #a0a0c0; font-family: monospace;">Dye</span>
+              <div id="loom-dye-slot" class="slot" data-type="loom-slot" data-index="1" style="width: 42px; height: 42px;"></div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 3px;">
+              <span style="font-size: 9px; color: #a0a0c0; font-family: monospace;">Pattern Item</span>
+              <div id="loom-pattern-slot" class="slot" data-type="loom-slot" data-index="2" style="width: 42px; height: 42px;"></div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 4px; flex-grow: 1;">
+            <span style="font-size: 10px; color: #a0a0c0; font-family: monospace;">Banner Designs</span>
+            <div id="loom-pattern-list" style="width: 140px; height: 150px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 2px solid #555; border-radius: 6px; padding: 6px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; align-content: start;">
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+            <span style="font-size: 10px; color: #a0a0c0; font-family: monospace;">Output Banner</span>
+            <div id="loom-output-slot" class="slot" data-type="loom-slot" data-index="3" style="width: 58px; height: 58px; border-color: var(--color-primary);"></div>
+          </div>
+        </div>
+        <button id="loom-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Loom</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Lectern Overlay -->
+  <div id="lectern-screen" class="screen-overlay" style="display: none; justify-content: center; align-items: center; background: rgba(0,0,0,0.75);">
+    <div style="background: #f4edd2; color: #1a1a1a; padding: 35px 30px; border-radius: 12px; width: 420px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); border: 6px solid #4a301a; display: flex; flex-direction: column; gap: 20px; position: relative;">
+      <div style="text-align: center; border-bottom: 2px dashed #bba882; padding-bottom: 10px; font-weight: bold; font-size: 20px; font-family: 'Georgia', serif; color: #3d2a1c;">
+        📖 Lectern Book
+      </div>
+      <div style="flex-grow: 1; min-height: 180px; display: flex; flex-direction: column; font-family: 'Georgia', serif; font-size: 15px; line-height: 1.5; color: #2e1d0f;">
+        <div id="lectern-page-view" style="display: block;">
+          <p id="lectern-page-text" style="white-space: pre-wrap; margin: 0;"></p>
+        </div>
+        <div id="lectern-page-edit" style="display: none; flex-direction: column; gap: 8px; flex-grow: 1;">
+          <textarea id="lectern-page-input" style="width: 100%; height: 150px; background: rgba(255,255,255,0.7); border: 1px solid #aa9070; border-radius: 4px; padding: 8px; font-family: 'Georgia', serif; font-size: 15px; resize: none; color: #1a1a1a;" placeholder="Write book content here..."></textarea>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-family: monospace; color: #665544; border-top: 1px dashed #bba882; padding-top: 12px;">
+        <button id="lectern-prev-btn" class="mc-btn" style="padding: 4px 10px; font-size: 12px; min-width: 60px;">◀ Prev</button>
+        <span id="lectern-page-indicator">Page 1 of 1</span>
+        <button id="lectern-next-btn" class="mc-btn" style="padding: 4px 10px; font-size: 12px; min-width: 60px;">Next ▶</button>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <button id="lectern-write-btn" class="mc-btn" style="flex: 1; font-size: 13px; background: #6b8c42;">Write Page</button>
+        <button id="lectern-save-btn" class="mc-btn" style="flex: 1; font-size: 13px; background: #3d6a9a; display: none;">Save Page</button>
+        <button id="lectern-close-btn" class="mc-btn" style="flex: 1; font-size: 13px;">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Brewing Stand Overlay -->
+  <div id="brewing-screen" class="screen-overlay" style="display: none;">
+    <div class="inventory-container">
+      <!-- Left: Player Inventory & Hotbar -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="brewing-player-inv" class="inventory-grid"></div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="brewing-player-hotbar" class="inventory-hotbar-grid"></div>
+      </div>
+
+      <!-- Right: Brewing Stand Slots and Progress -->
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Brewing Stand</div>
+        <div class="brewing-container" style="display: flex; flex-direction: column; align-items: center; gap: 15px; background: rgba(0, 0, 0, 0.45); padding: 20px; border-radius: 12px; border: 2.5px solid #5a2d82; box-shadow: 0 8px 32px rgba(0,0,0,0.6);">
+          <!-- Top Row: Fuel and Ingredient -->
+          <div style="display: flex; align-items: center; gap: 30px;">
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+              <span style="font-size: 10px; color: #a0a0c0; font-family: monospace;">Fuel</span>
+              <div id="brewing-fuel-slot" class="slot" data-type="brewing-slot" data-index="4" style="width: 44px; height: 44px; border-color: #d8a84c;"></div>
+            </div>
+            <div id="brewing-fuel-indicator" style="font-size: 12px; color: #d8a84c; font-family: monospace; font-weight: bold; background: rgba(0,0,0,0.4); padding: 4px 8px; border-radius: 4px; border: 1px solid #d8a84c;">Fuel: 0%</div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+              <span style="font-size: 10px; color: #a0a0c0; font-family: monospace;">Ingredient</span>
+              <div id="brewing-ingredient-slot" class="slot" data-type="brewing-slot" data-index="3" style="width: 44px; height: 44px;"></div>
+            </div>
+          </div>
+
+          <!-- Brewing Progress Arrow/Indicator -->
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 2px;">
+            <div id="brewing-progress-arrow" style="font-size: 28px; color: #555; position: relative;">
+              ▼
+              <div id="brewing-progress-fill" style="position: absolute; top: 0; left: 0; width: 100%; height: 0%; color: #00ffcc; overflow: hidden; pointer-events: none; transition: height 0.2s;">▼</div>
+            </div>
+            <div id="brewing-status-text" style="font-size: 11px; color: #00ffcc; font-family: monospace;">Idle</div>
+          </div>
+
+          <!-- Bottom Row: 3 Potions -->
+          <div style="display: flex; justify-content: center; gap: 12px;">
+            <div class="slot" data-type="brewing-slot" data-index="0" style="width: 46px; height: 46px; border-color: #00bfff; border-radius: 50%;"></div>
+            <div class="slot" data-type="brewing-slot" data-index="1" style="width: 46px; height: 46px; border-color: #00bfff; border-radius: 50%;"></div>
+            <div class="slot" data-type="brewing-slot" data-index="2" style="width: 46px; height: 46px; border-color: #00bfff; border-radius: 50%;"></div>
+          </div>
+        </div>
+        <button id="brewing-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Stand</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Enchanting Table Overlay -->
+  <div id="enchanting-screen" class="screen-overlay" style="display: none;">
+    <div class="inventory-container">
+      <!-- Left: Player Inventory & Hotbar -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="enchant-player-inv" class="inventory-grid"></div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="enchant-player-hotbar" class="inventory-hotbar-grid"></div>
+      </div>
+
+      <!-- Right: Enchanting Options -->
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Enchanting Table</div>
+        <div class="enchanting-container" style="display: flex; gap: 20px; background: rgba(0, 0, 0, 0.45); padding: 20px; border-radius: 12px; border: 2.5px solid #a832b2; box-shadow: 0 8px 32px rgba(0,0,0,0.6);">
+          <!-- Slots Column -->
+          <div style="display: flex; flex-direction: column; gap: 15px; align-items: center; justify-content: center;">
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+              <span style="font-size: 9px; color: #a0a0c0; font-family: monospace;">Item</span>
+              <div id="enchant-item-slot" class="slot" data-type="enchant-slot" data-index="0" style="width: 48px; height: 48px;"></div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+              <span style="font-size: 9px; color: #a0a0c0; font-family: monospace;">Lapis</span>
+              <div id="enchant-lapis-slot" class="slot" data-type="enchant-slot" data-index="1" style="width: 48px; height: 48px; border-color: #3b5998;"></div>
+            </div>
+          </div>
+
+          <!-- Offerings Column -->
+          <div style="display: flex; flex-direction: column; gap: 8px; width: 220px;">
+            <div class="enchant-offer" id="enchant-offer-1" data-index="0" style="padding: 8px; background: rgba(255,255,255,0.05); border: 1.5px solid #444; border-radius: 6px; cursor: pointer; font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #aaa; transition: background 0.15s, border-color 0.15s;">
+              <div style="font-weight: bold; color: #e0e0e0;">Lvl 1 Offering</div>
+              <div style="font-size: 10px; color: #888;" id="enchant-offer-text-1">Runic glyphs...</div>
+              <div style="font-size: 11px; color: #a832b2; font-weight: bold;" id="enchant-offer-cost-1">Cost: 1 Level + 1 Lapis</div>
+            </div>
+            <div class="enchant-offer" id="enchant-offer-2" data-index="1" style="padding: 8px; background: rgba(255,255,255,0.05); border: 1.5px solid #444; border-radius: 6px; cursor: pointer; font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #aaa; transition: background 0.15s, border-color 0.15s;">
+              <div style="font-weight: bold; color: #e0e0e0;">Lvl 2 Offering</div>
+              <div style="font-size: 10px; color: #888;" id="enchant-offer-text-2">Runic glyphs...</div>
+              <div style="font-size: 11px; color: #a832b2; font-weight: bold;" id="enchant-offer-cost-2">Cost: 2 Levels + 2 Lapis</div>
+            </div>
+            <div class="enchant-offer" id="enchant-offer-3" data-index="2" style="padding: 8px; background: rgba(255,255,255,0.05); border: 1.5px solid #444; border-radius: 6px; cursor: pointer; font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #aaa; transition: background 0.15s, border-color 0.15s;">
+              <div style="font-weight: bold; color: #e0e0e0;">Lvl 3 Offering</div>
+              <div style="font-size: 10px; color: #888;" id="enchant-offer-text-3">Runic glyphs...</div>
+              <div style="font-size: 11px; color: #a832b2; font-weight: bold;" id="enchant-offer-cost-3">Cost: 3 Levels + 3 Lapis</div>
+            </div>
+          </div>
+        </div>
+        <button id="enchant-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Table</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Anvil Overlay -->
+  <div id="anvil-screen" class="screen-overlay" style="display: none;">
+    <div class="inventory-container">
+      <!-- Left: Player Inventory & Hotbar -->
+      <div class="inventory-section">
+        <div class="inventory-section-title">Survival Inventory</div>
+        <div id="anvil-player-inv" class="inventory-grid"></div>
+        <div class="inventory-section-title">Quickbar</div>
+        <div id="anvil-player-hotbar" class="inventory-hotbar-grid"></div>
+      </div>
+
+      <!-- Right: Anvil Mechanics -->
+      <div class="inventory-section" style="justify-content: center;">
+        <div class="inventory-section-title" style="text-align: center;">Anvil</div>
+        <div class="anvil-container" style="display: flex; flex-direction: column; align-items: center; gap: 15px; background: rgba(0, 0, 0, 0.45); padding: 20px; border-radius: 12px; border: 2.5px solid #444; box-shadow: 0 8px 32px rgba(0,0,0,0.6);">
+          <!-- Renaming Text Input -->
+          <input type="text" id="anvil-rename-input" placeholder="Rename tool..." style="width: 200px; padding: 6px 10px; background: rgba(0,0,0,0.6); border: 1.5px solid var(--color-primary); color: #fff; font-family: 'Share Tech Mono', monospace; border-radius: 6px; font-size: 13px; outline: none; text-align: center;">
+
+          <!-- Slots row: Input A + Input B -> Output -->
+          <div style="display: flex; align-items: center; gap: 15px;">
+            <div id="anvil-input-slot-0" class="slot" data-type="anvil-slot" data-index="0" style="width: 44px; height: 44px;"></div>
+            <span style="font-size: 20px; color: #888;">+</span>
+            <div id="anvil-input-slot-1" class="slot" data-type="anvil-slot" data-index="1" style="width: 44px; height: 44px;"></div>
+            <span style="font-size: 20px; color: #888;">➜</span>
+            <div id="anvil-result-slot" class="slot" data-type="anvil-slot" data-index="2" style="width: 54px; height: 54px; border-color: var(--color-primary);"></div>
+          </div>
+
+          <!-- Cost feedback label -->
+          <div id="anvil-cost-label" style="font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #ff5555; font-weight: bold; background: rgba(255,0,0,0.05); padding: 4px 10px; border-radius: 4px; border: 1px solid rgba(255,0,0,0.2); display: none;">Enchantment Cost: 0 Levels</div>
+        </div>
+        <button id="anvil-close-btn" class="mc-btn" style="margin-top: 15px; width: 100%;">Close Anvil</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Screen UI: World Selection Screen -->
+  <div id="world-select-screen" class="screen-overlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px;">
+    <div class="mp-title">Select World</div>
+    
+    <div class="server-list-box" id="world-list" style="width: 600px; height: 320px; display: flex; flex-direction: column; gap: 8px;">
+      <!-- Dynamically populated world items -->
+    </div>
+
+    <div class="server-list-actions" style="width: 600px;">
+      <button id="btn-create-world-menu" class="mc-btn" style="flex: 1;">Create New World</button>
+      <button id="btn-cancel-world-select" class="mc-btn" style="flex: 1;">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Screen UI: Create New World Modal Overlay -->
+  <div id="create-world-modal" class="screen-overlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 120;">
+    <div style="background: var(--bg-glass-heavy); border: 1px solid var(--border-glass); box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8); border-radius: 16px; padding: 28px; width: min(450px, calc(100vw - 40px)); display: flex; flex-direction: column; gap: 18px; text-align: center;">
+      <h1 style="font-weight: 700; font-size: 24px; letter-spacing: 2px; margin: 0; background: linear-gradient(135deg, #ffffff, #8899aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">CREATE NEW WORLD</h1>
+      
+      <div class="menu-panel" style="text-align: left; display: flex; flex-direction: column; gap: 12px;">
+        <div class="setting-item">
+          <label for="new-world-name">World Name</label>
+          <input type="text" id="new-world-name" value="New World" placeholder="My World">
+        </div>
+        <div class="setting-item">
+          <label for="new-world-seed">World Seed</label>
+          <div class="seed-row" style="width: 160px; display: flex; gap: 6px;">
+            <input type="text" id="new-world-seed" value="" placeholder="Random" style="flex: 1; min-width: 0;">
+            <button id="new-world-rand-seed-btn" class="btn mini-btn" style="padding: 4px 6px;">Rand</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <label for="new-world-preset">Preset</label>
+          <select id="new-world-preset">
+            <option value="survival">Survival Islands</option>
+            <option value="forested">Forested Hills</option>
+            <option value="flat">Flat Builder</option>
+            <option value="amplified">Amplified</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 12px;">
+        <button id="btn-confirm-create-world" class="mc-btn" style="flex: 1;">Create</button>
+        <button id="btn-cancel-create-world" class="mc-btn" style="flex: 1;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Pause overlay (only accessible in game) -->
+  <div id="pause-screen" class="screen-overlay" style="display: none;">
+    <div id="pause-container" style="background: var(--bg-glass-heavy); border: 1.5px solid var(--border-glass); border-radius: 12px; padding: 24px; width: 300px; display: flex; flex-direction: column; gap: 12px; align-items: stretch; text-align: center; box-shadow: 0 15px 35px rgba(0,0,0,0.6);">
+      <h1 style="font-size: 24px; margin: 0 0 10px 0; background: linear-gradient(135deg, #ffffff, #8899aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 1.5px; font-weight: 700;">GAME PAUSED</h1>
+      <button id="resume-btn" class="mc-btn">Resume Game</button>
+      <button id="pause-options-btn" class="mc-btn">Options...</button>
+      <button id="pause-disconnect-btn" class="mc-btn" style="background: rgba(220, 50, 50, 0.2); border-color: rgb(220, 50, 50); text-shadow: none;">Quit to Title</button>
+    </div>
+  </div>
+
+  <!-- Screen UI: Options overlay -->
+  <div id="options-screen" class="screen-overlay" style="display: none;">
+    <div id="options-container" style="background: var(--bg-glass-heavy); border: 1px solid var(--border-glass); box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8); border-radius: 16px; padding: 28px; width: min(800px, calc(100vw - 40px)); max-height: calc(100vh - 48px); overflow: auto; display: flex; flex-direction: column; gap: 18px; align-items: stretch; text-align: center;">
+      <h1 style="font-weight: 700; font-size: 28px; letter-spacing: 2px; margin: 0 0 10px 0; background: linear-gradient(135deg, #ffffff, #8899aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">OPTIONS</h1>
+      
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; text-align: left;">
+        <div class="menu-panel">
+          <div class="inventory-section-title">World Settings</div>
+          <div class="setting-item">
+            <label for="cfg-world-seed">World Seed</label>
+            <div class="seed-row" style="width: 160px; display: flex; gap: 6px;">
+              <input type="text" id="cfg-world-seed" value="12345" placeholder="Seed" style="flex: 1; min-width: 0;">
+              <button id="random-seed-btn" class="btn mini-btn" style="padding: 4px 6px;">Rand</button>
+            </div>
+          </div>
+          <div class="setting-item">
+            <label for="cfg-world-preset">Preset</label>
+            <select id="cfg-world-preset">
+              <option value="survival">Survival Islands</option>
+              <option value="forested">Forested Hills</option>
+              <option value="flat">Flat Builder</option>
+              <option value="amplified">Amplified</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label for="cfg-difficulty">Difficulty</label>
+            <select id="cfg-difficulty">
+              <option value="normal">Normal</option>
+              <option value="peaceful">Peaceful</option>
+              <option value="hard">Hard</option>
+              <option value="hardcore">Hardcore</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label for="cfg-server-ip">Server Address</label>
+            <div style="display: flex; flex-direction: column; align-items: flex-end;">
+              <input type="text" id="cfg-server-ip" value="" placeholder="https://your-game.loca.lt">
+              <div class="setting-help">Paste the current public share link, e.g. https://quiet-cubes.loca.lt</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="menu-panel">
+          <div class="inventory-section-title">Graphics & Generator</div>
+          <div class="setting-item">
+            <label for="cfg-fov">Field of View (FOV)</label>
+            <input type="range" id="cfg-fov" min="50" max="110" value="75">
+          </div>
+          <div class="setting-item">
+            <label for="cfg-render-dist">Render Distance</label>
+            <input type="range" id="cfg-render-dist" min="4" max="10" value="5">
+          </div>
+          <div class="setting-item">
+            <label for="cfg-shader-pack">Shaders</label>
+            <select id="cfg-shader-pack">
+              <option value="off">Off / Vanilla Performance</option>
+              <option value="performance">Performance</option>
+              <option value="balanced">Balanced</option>
+              <option value="cinematic">Cinematic</option>
+              <option value="vivid">Vivid Colors</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label for="cfg-shadows">Real-time Shadows</label>
+            <select id="cfg-shadows">
+              <option value="off">Off</option>
+              <option value="on">On</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label for="cfg-biome-scale">Biome Scale</label>
+            <input type="range" id="cfg-biome-scale" min="1" max="10" value="5">
+          </div>
+          <div class="setting-item">
+            <label for="cfg-terrain-scale">Terrain Scale</label>
+            <input type="range" id="cfg-terrain-scale" min="1" max="10" value="5">
+          </div>
+          <div class="setting-item">
+            <label for="cfg-cave-density">Cave Density</label>
+            <input type="range" id="cfg-cave-density" min="0" max="10" value="4">
+          </div>
+          <div class="setting-item">
+            <label for="cfg-structure-rate">Structure Rate</label>
+            <input type="range" id="cfg-structure-rate" min="0" max="10" value="3">
+          </div>
+        </div>
+
+        <div class="menu-panel" style="grid-column: 1 / -1;">
+          <div class="inventory-section-title">Input Settings</div>
+          <div class="setting-help">Click an action, press a key, and the configuration is saved. Defaults use Shift to sprint and Ctrl to crouch.</div>
+          <div id="input-bindings-list" class="input-bindings-list"></div>
+          <div style="display: flex; gap: 8px; margin-top: 12px;">
+            <button id="flip-run-crouch-btn" class="mc-btn" style="flex: 1; font-size: 12px;">Flip Sprint/Crouch</button>
+            <button id="reset-input-bindings-btn" class="mc-btn" style="flex: 1; font-size: 12px;">Reset Input Defaults</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 12px; margin-top: 10px;">
+        <button id="reset-world-btn" class="mc-btn" style="flex: 1; font-size: 12px; background: rgba(255,255,255,0.05);">Reset Local Data</button>
+        <button id="world-create-btn" class="mc-btn" style="flex: 1; font-size: 12px;">Recreate World</button>
+        <button id="options-done-btn" class="mc-btn" style="flex: 1; font-size: 12px;">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: First boot sign in -->
+  <div id="auth-screen" class="screen-overlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; gap: 16px;">
+    <div class="auth-panel">
+      <div class="auth-title">CubeGame Account</div>
+      <div class="auth-tabs">
+        <button id="auth-signin-tab" class="auth-tab active" type="button">Sign In</button>
+        <button id="auth-signup-tab" class="auth-tab" type="button">Sign Up</button>
+      </div>
+      <div class="auth-field">
+        <label for="auth-username">Username</label>
+        <input id="auth-username" type="text" value="" placeholder="Steve" autocomplete="username" maxlength="24">
+      </div>
+      <div class="auth-field">
+        <label for="auth-password">Password</label>
+        <input id="auth-password" type="password" value="" placeholder="Password" autocomplete="current-password" maxlength="80">
+      </div>
+      <div id="auth-status">Sign in with your CubeGame username.</div>
+      <div class="auth-actions">
+        <button id="auth-submit-btn" class="mc-btn" type="button">Sign In</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Startup connection choice -->
+  <div id="connection-mode-screen" class="screen-overlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; gap: 16px;">
+    <div class="mp-title">Choose Connection</div>
+    <div class="mp-subtitle">Pick the startup route for this client. You can still change server address and room code from Multiplayer later.</div>
+    <div class="connection-choice-grid">
+      <button id="startup-offline-lan-btn" class="mc-btn connection-choice" type="button">
+        <strong>Play Offline / LAN</strong>
+        <span>Use local worlds, local server addresses, and same-network rooms.</span>
+      </button>
+      <button id="startup-global-btn" class="mc-btn connection-choice" type="button">
+        <strong>Global Multiplayer</strong>
+        <span>Connect to a loca.lt or hosted server link and optionally enter a room code.</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Screen UI: Main Menu overlay -->
+  <div id="main-menu-screen" class="screen-overlay" style="display: none;">
+    <div class="main-menu-logo-container">
+      <div class="minecraft-logo">CUBEGAME</div>
+      <div id="splash-text" class="splash-text">Vapour Engine procedurals!</div>
+    </div>
+    <div class="main-menu-btn-group">
+      <button id="main-singleplayer-btn" class="mc-btn">Singleplayer</button>
+      <button id="main-multiplayer-btn" class="mc-btn">Multiplayer</button>
+      <button id="main-modded-modes-btn" class="mc-btn">Modded Game Modes</button>
+      <div class="main-menu-row">
+        <button id="main-options-btn" class="mc-btn">Options...</button>
+        <button id="main-quit-btn" class="mc-btn">Quit Game</button>
+      </div>
+    </div>
+    <div class="skin-import-row">
+      <input id="skin-import-input" type="file" accept="image/png,image/jpeg" style="display: none;">
+      <button id="skin-import-btn" class="mc-btn" type="button">Import Skin PNG/JPG</button>
+      <button id="skin-default-steve-btn" class="mc-btn" type="button">Use Steve</button>
+      <button id="skin-default-alex-btn" class="mc-btn" type="button">Use Alex</button>
+      <div id="skin-import-status">Default Steve skin active</div>
+    </div>
+    <div class="menu-footer">
+      <div>CubeGame Survival Beta 1.12</div>
+      <div>Vapour Engine V1.0</div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Modded Game Modes overlay -->
+  <div id="modded-modes-screen" class="screen-overlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; gap: 18px;">
+    <div class="mp-title">Modded Game Modes</div>
+    <div class="mp-subtitle">Community-style CubeGame variants that reuse the real multiplayer server. Voice chat starts automatically when a mode opens.</div>
+    <div class="menu-panel" style="width: min(760px, calc(100vw - 32px)); text-align: left; display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; flex-wrap: wrap;">
+        <div>
+          <div class="panel-title" style="margin-bottom: 6px;">Counter-Block Offensive</div>
+          <div style="color: var(--menu-soft-text); line-height: 1.35;">CS2-style Premier bomb defusal with map veto, warmup, MR12 economy rounds, readable three-lane maps, smokes, stakes, and voice-first callouts.</div>
+        </div>
+        <button id="modded-csgo-play-btn" class="mc-btn" style="min-width: 190px;">Start Premier</button>
+      </div>
+      <div class="server-modes">
+        <span>Map Veto</span>
+        <span>MR12</span>
+        <span>Bomb Defusal</span>
+        <span>16 Slots</span>
+      </div>
+      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.12);">
+        <div>
+          <div class="panel-title" style="margin-bottom: 6px;">Fortress Arena</div>
+          <div style="color: var(--menu-soft-text); line-height: 1.35;">TF2-inspired Source movement with nine class profiles, air strafing, blast jumps, ragdolls, Payload, Control Points, King of the Hill, and Capture the Flag foundations.</div>
+        </div>
+        <button id="modded-tf2-play-btn" class="mc-btn" style="min-width: 190px;">Start Payload</button>
+      </div>
+      <div class="server-modes">
+        <span>9 Classes</span>
+        <span>Payload</span>
+        <span>KOTH</span>
+        <span>24 Slots</span>
+      </div>
+    </div>
+    <button id="modded-modes-back-btn" class="mc-btn" style="width: min(320px, calc(100vw - 32px));">Back</button>
+  </div>
+
+  <!-- Server Link Prompt Modal -->
+  <div id="server-link-modal">
+    <div class="server-link-panel">
+      <div class="server-link-title">Connect To Server</div>
+      <div class="server-link-copy">Paste the current loca.lt or hosted server link to reach shared worlds, Ashfall, or CrownForge.</div>
+      <div class="server-link-field">
+        <label for="server-link-input">Server Link</label>
+        <input type="text" id="server-link-input" class="server-link-input" placeholder="https://your-server.loca.lt" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <div class="server-link-hint">HTTPS links are converted to secure WebSocket connections automatically.</div>
+        <div id="server-link-status" class="server-link-status">Paste your current public share link before logging in.</div>
+      </div>
+      <div class="server-link-actions">
+        <button id="server-link-connect-btn" class="mc-btn">Connect</button>
+        <button id="server-link-skip-btn" class="mc-btn">Play Offline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen UI: Multiplayer Server/Room List overlay -->
+  <div id="multiplayer-screen" class="screen-overlay">
+    <div class="mp-title">Play Multiplayer</div>
+    <div class="mp-subtitle">Choose Ashfall Anarchy for one permanent survival world, or CrownForge Network for SkyWars, BedWars, Void Duels, Castle Siege, and Survival Games. Public share links look like https://quiet-cubes.loca.lt.</div>
+    
+    <div class="create-room-row">
+      <input type="text" id="cfg-username" value="Steve" placeholder="Your Username">
+      <input type="text" id="cfg-room-name" placeholder="Custom room id, or select a featured server below">
+      <input type="text" id="cfg-room-code" placeholder="Optional room code or share link">
+      <button id="btn-create-room" class="mc-btn">Create Room</button>
+    </div>
+
+    <div class="server-list-box" id="server-list">
+      <!-- Dynamically populated -->
+    </div>
+
+    <div class="server-list-actions">
+      <button id="btn-refresh-servers" class="mc-btn">Refresh</button>
+      <button id="btn-join-server" class="mc-btn">Join Server</button>
+      <button id="btn-cancel-multiplayer" class="mc-btn">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Screen UI: Death Overlay -->
+  <div id="death-screen" class="screen-overlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(120, 0, 0, 0.45); backdrop-filter: blur(10px); z-index: 200;">
+    <h1 style="color: #ff2222; font-size: 56px; font-family: 'Outfit', sans-serif; text-shadow: 0 4px 20px rgba(255, 0, 0, 0.6); margin-bottom: 30px; letter-spacing: 2px;">You Died!</h1>
+    <div style="display: flex; flex-direction: column; gap: 15px; width: 250px;">
+      <button id="death-respawn-btn" class="mc-btn" style="background: rgba(0, 150, 0, 0.6); border-color: #00ff00;">Respawn</button>
+      <button id="death-quit-btn" class="mc-btn" style="background: rgba(50, 50, 50, 0.6);">Quit to Title</button>
+    </div>
+  </div>
+
+  <!-- Dragging Item element -->
+  <div id="dragged-item">
+    <img id="dragged-item-img" src="" alt="">
+    <span id="dragged-item-count"></span>
+  </div>
+
+  <!-- Hidden compatibility hook; mobile controls are enabled automatically on touch/iOS. -->
+  <div id="mobile-toggle-btn" style="display: none;"></div>
+
+  <!-- Mobile controls overlay (only enabled on iOS/touch devices) -->
+  <div id="mobile-controls" aria-label="Mobile touch controls" style="display: none;">
+    <div id="mobile-look-zone" aria-hidden="true"></div>
+
+    <div id="mobile-top-buttons" aria-label="Mobile menu shortcuts">
+      <button id="mobile-btn-chat" class="mobile-pe-btn" title="Chat">💬</button>
+      <button id="mobile-btn-pause" class="mobile-pe-btn" title="Pause">☰</button>
+    </div>
+
+    <div id="mobile-dpad" aria-label="Move controls">
+      <button id="mobile-btn-forward" class="mobile-pe-btn" title="Forward">▲</button>
+      <button id="mobile-btn-left" class="mobile-pe-btn" title="Left">◀</button>
+      <button id="mobile-btn-sneak" class="mobile-pe-btn" title="Sneak">SNEAK</button>
+      <button id="mobile-btn-right" class="mobile-pe-btn" title="Right">▶</button>
+      <button id="mobile-btn-backward" class="mobile-pe-btn" title="Back">▼</button>
+    </div>
+
+    <div id="mobile-action-stack" aria-label="Action controls">
+      <button id="mobile-btn-attack" class="mobile-pe-btn" title="Attack / Break">HIT</button>
+      <button id="mobile-btn-place" class="mobile-pe-btn" title="Place / Use">USE</button>
+      <button id="mobile-btn-jump" class="mobile-pe-btn" title="Jump">JUMP</button>
+      <button id="mobile-btn-inventory" class="mobile-pe-btn" title="Inventory">INV</button>
+      <div id="mobile-hotbar-touch">
+        <button id="mobile-btn-prev" class="mobile-pe-btn" title="Previous hotbar slot">‹</button>
+        <button id="mobile-btn-next" class="mobile-pe-btn" title="Next hotbar slot">›</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // Desktop startup gate: this runs before the TypeScript bundle finishes booting.
+  // It blocks the account screen until the player pastes the current loca.lt URL.
+  (function(){
+    const SESSION_READY_KEY = 'cubegame_desktop_server_link_ready';
+    const CACHED_LINK_KEY = 'cubegame_desktop_server_link';
+    function isDesktopShell() {
+      try {
+        return Boolean(window.CubeGameNative || window.electronAPI) ||
+          new URLSearchParams(window.location.search).get('native') === '1' ||
+          window.location.protocol === 'file:';
+      } catch (_) {
+        return window.location.protocol === 'file:';
+      }
+    }
+    function normalizeAddress(value) {
+      let clean = String(value || '').trim();
+      if (/^wss?:[^/]/i.test(clean)) clean = clean.replace(/^wss?:/i, function(scheme){ return scheme + '//'; });
+      if (/^https?:\/\//i.test(clean)) clean = clean.replace(/\/+$/, '');
+      return clean;
+    }
+    function isRemoteShareAddress(value) {
+      const clean = normalizeAddress(value);
+      if (!clean || /serverip|server-port|serverport|your-server|your-game/i.test(clean)) return false;
+      if (!/^https?:\/\//i.test(clean) && !/^wss?:\/\//i.test(clean)) return false;
+      try {
+        const url = new URL(clean);
+        const host = url.hostname.toLowerCase();
+        return !!host && !['localhost','127.0.0.1','0.0.0.0','::1'].includes(host);
+      } catch (_) {
+        return false;
+      }
+    }
+    if (!isDesktopShell()) return;
+
+    let cached = '';
+    try { cached = window.localStorage.getItem(CACHED_LINK_KEY) || ''; } catch (_) {}
+    if (isRemoteShareAddress(cached)) window.cubeGameServerUrl = normalizeAddress(cached);
+    if (isRemoteShareAddress(cached) || window.sessionStorage.getItem(SESSION_READY_KEY) === '1') return;
+
+    window.cubeGameDesktopNeedsServerLink = true;
+    let released = false;
+    let observer = null;
+    function setStatus(message) {
+      const status = document.getElementById('server-link-status');
+      if (status) status.textContent = message;
+    }
+    function hideDesktopSplashForServerGate() {
+      const splash = document.getElementById('vapour-engine-splash');
+      if (!splash) return;
+      splash.dataset.hidden = 'true';
+      splash.style.transition = 'none';
+      splash.style.opacity = '0';
+      splash.style.pointerEvents = 'none';
+      splash.style.display = 'none';
+    }
+    function hideCompetingScreens() {
+      if (released) return;
+      hideDesktopSplashForServerGate();
+      ['auth-screen','connection-mode-screen','main-menu-screen','multiplayer-screen','world-select-screen','pause-screen'].forEach(function(id){
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+      const modal = document.getElementById('server-link-modal');
+      if (modal) modal.style.display = 'flex';
+      setStatus('Paste the current https://____.loca.lt link before logging in.');
+      setTimeout(function(){ const input = document.getElementById('server-link-input'); if (input) input.focus(); }, 0);
+    }
+    function releaseWithAddress(address) {
+      released = true;
+      window.cubeGameDesktopNeedsServerLink = false;
+      window.sessionStorage.setItem(SESSION_READY_KEY, '1');
+      if (address) {
+        const normalized = normalizeAddress(address);
+        window.cubeGameServerUrl = normalized;
+        try { window.localStorage.setItem(CACHED_LINK_KEY, normalized); } catch (_) {}
+      }
+      if (observer) observer.disconnect();
+    }
+    function installGate() {
+      const modal = document.getElementById('server-link-modal');
+      const input = document.getElementById('server-link-input');
+      const connect = document.getElementById('server-link-connect-btn');
+      const skip = document.getElementById('server-link-skip-btn');
+      if (!modal || !input || !connect || !skip) return;
+      input.value = '';
+      hideCompetingScreens();
+      observer = new MutationObserver(hideCompetingScreens);
+      ['auth-screen','connection-mode-screen','main-menu-screen','server-link-modal'].forEach(function(id){
+        const el = document.getElementById(id);
+        if (el) observer.observe(el, { attributes: true, attributeFilter: ['style','class'] });
+      });
+      connect.addEventListener('click', function(event){
+        const address = normalizeAddress(input.value);
+        if (!isRemoteShareAddress(address)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          setStatus('Paste the full current public link, for example https://quiet-cubes.loca.lt.');
+          input.focus();
+          return;
+        }
+        releaseWithAddress(address);
+      }, true);
+      input.addEventListener('keydown', function(event){
+        if (event.key !== 'Enter') return;
+        const address = normalizeAddress(input.value);
+        if (!isRemoteShareAddress(address)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          setStatus('Paste the full current public link, for example https://quiet-cubes.loca.lt.');
+          input.focus();
+        } else {
+          releaseWithAddress(address);
+        }
+      }, true);
+      skip.addEventListener('click', function(){ releaseWithAddress(''); }, true);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', installGate, { once: true });
+    } else {
+      installGate();
+    }
+
+    // Last-resort native boot safety: if the Vite bundle or a slow asset stalls
+    // before it can fade out the splash, the desktop server-link gate must still
+    // become visible instead of leaving the macOS app stuck on the Vapour screen.
+    window.setTimeout(function(){
+      if (!window.cubeGameDesktopNeedsServerLink || released) return;
+      hideCompetingScreens();
+    }, 1800);
+  })();
+</script>
+<script>
+  (function(){
+    window.setTimeout(function(){
+      if (window.cubeGameAppReady === true || window.cubeGameBootFailed === true) return;
+      const splash = document.getElementById('vapour-engine-splash');
+      const main = document.getElementById('main-menu-screen');
+      const hud = document.getElementById('hud-overlay');
+      const chat = document.getElementById('chat-overlay');
+      if (hud) hud.style.display = 'none';
+      if (chat) chat.style.display = 'none';
+      // Never reveal the real main menu from inline HTML. If Vite/TypeScript has
+      // not booted, showing the menu would produce dead buttons in native builds.
+      if (main) main.style.display = 'none';
+      if (window.cubeGameDesktopNeedsServerLink) {
+        const modal = document.getElementById('server-link-modal');
+        if (modal) modal.style.display = 'flex';
+      }
+      if (splash && splash.dataset.hidden !== 'true') {
+        let status = document.getElementById('vapour-boot-status');
+        if (!status) {
+          status = document.createElement('div');
+          status.id = 'vapour-boot-status';
+          status.style.cssText = 'margin-top:24px;max-width:min(640px,calc(100vw - 40px));font-family:VT323,monospace;font-size:18px;line-height:1.35;color:#f0f0ff;text-align:center;opacity:.9';
+          splash.appendChild(status);
+        }
+        if (!/(?:failed|error|unavailable)/i.test(status.textContent || '')) {
+          status.textContent = 'Loading CubeGame code… buttons will appear only after the native bundle is ready.';
+        }
+      }
+    }, 8500);
+  })();
+</script>
+
+  <!-- Main JavaScript Entrypoint -->
+  <script type="module" src="/src/main.ts"></script>
+<script>
+  (function(){
+    try {
+      const el = document.getElementById('cfg-server-ip');
+      if (el && (!el.value || el.value.trim() === '')) {
+        const host = window.location.hostname || 'localhost';
+        el.value = `ws://${host}:8080`;
+      }
+    } catch(e) {}
+  })();
+</script>
+</body>
+</html>

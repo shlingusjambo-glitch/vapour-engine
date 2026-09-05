@@ -1,0 +1,23 @@
+{
+  "name": "@vapour/gameplay",
+  "version": "0.2.5-alpha",
+  "type": "module",
+  "description": "Gameplay framework for Vapour Engine: inventory, crafting, combat, status effects, and narrative",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later"
+}

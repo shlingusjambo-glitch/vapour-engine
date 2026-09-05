@@ -1,0 +1,30 @@
+{
+  "name": "@vapour/engine",
+  "version": "0.2.0-alpha",
+  "type": "module",
+  "description": "Browser host and TypeScript gameplay SDK for Vapour Engine",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.64",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later",
+  "dependencies": {
+    "@vapour/math": "workspace:*",
+    "@vapour/gameplay": "workspace:*"
+  }
+}

@@ -1,0 +1,16 @@
+/target/
+node_modules/
+dist/
+/.toolchains/
+/.pnpm-store/
+*.log
+.DS_Store
+.idea/
+.vscode/
+coverage/
+*.tsbuildinfo
+packages/editor/public/engine/
+packages/engine/wasm/
+projects/*/.vapour/cache/
+projects/*/.vapour/build/
+/release/

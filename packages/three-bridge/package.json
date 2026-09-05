@@ -1,0 +1,32 @@
+{
+  "name": "@vapour/three-bridge",
+  "version": "0.2.0-alpha",
+  "type": "module",
+  "description": "Three.js scene migration bridge for Vapour Engine's WebGPU renderer",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "three": "^0.152.2"
+  },
+  "peerDependencies": {
+    "@vapour/engine": ">=0.2.0-alpha"
+  },
+  "devDependencies": {
+    "@vapour/engine": "workspace:*",
+    "@webgpu/types": "^0.1.64",
+    "@types/three": "^0.152.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later"
+}
