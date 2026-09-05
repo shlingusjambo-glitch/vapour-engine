@@ -1,0 +1,339 @@
+{
+  "version": 1,
+  "units": "meters",
+  "upAxis": "Y",
+  "vehicleForward": "-Z",
+  "buildingFront": "+Z",
+  "assets": [
+    {
+      "id": "hotel",
+      "file": "hotel.glb",
+      "lodFile": "hotel_lod1.glb",
+      "triangles": 75120,
+      "bounds": {
+        "min": [
+          -11.899999618530273,
+          0.0,
+          -6.849999904632568
+        ],
+        "max": [
+          11.899999618530273,
+          17.60999870300293,
+          8.848000526428223
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            8,
+            0
+          ],
+          "halfExtents": [
+            11.7,
+            8,
+            6.6
+          ]
+        }
+      ],
+      "description": "Original 23m coastal hotel with recessed glazing, bronze mullions, shaded arcade, stepped parapets and rooftop service detail."
+    },
+    {
+      "id": "storefront",
+      "file": "storefront.glb",
+      "lodFile": "storefront_lod1.glb",
+      "triangles": 43712,
+      "bounds": {
+        "min": [
+          -6.400000095367432,
+          0.0,
+          -4.5
+        ],
+        "max": [
+          6.400000095367432,
+          7.894999980926514,
+          5.563000202178955
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            3.7,
+            0
+          ],
+          "halfExtents": [
+            6.2,
+            3.7,
+            4.1
+          ]
+        }
+      ],
+      "description": "Two-storey corner provisions shop, shaded awnings, recessed shopfronts and lettering."
+    },
+    {
+      "id": "warehouse",
+      "file": "warehouse.glb",
+      "lodFile": "warehouse_lod1.glb",
+      "triangles": 36890,
+      "bounds": {
+        "min": [
+          -10.649999618530273,
+          0.0,
+          -8.100000381469727
+        ],
+        "max": [
+          10.649999618530273,
+          7.599999904632568,
+          10.27500057220459
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            3.8,
+            0
+          ],
+          "halfExtents": [
+            10.6,
+            3.8,
+            8.2
+          ]
+        }
+      ],
+      "description": "Sawtooth-roof marine workshop with corrugated shutters, clerestories and loading canopies."
+    },
+    {
+      "id": "sedan",
+      "file": "sedan.glb",
+      "lodFile": "sedan_lod1.glb",
+      "triangles": 23532,
+      "bounds": {
+        "min": [
+          -1.1390000581741333,
+          0.010999998077750206,
+          -2.3399999141693115
+        ],
+        "max": [
+          1.1390000581741333,
+          1.4950000047683716,
+          2.3399999141693115
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            0.74,
+            0
+          ],
+          "halfExtents": [
+            0.94,
+            0.58,
+            2.28
+          ]
+        }
+      ],
+      "description": "Original Solace Meridian sedan, 4.68m long, carved wheel arches, sculpted roof, glass regions, detailed rims, interior, lights and four axle-origin wheel nodes."
+    },
+    {
+      "id": "palm",
+      "file": "palm.glb",
+      "lodFile": "palm_lod1.glb",
+      "triangles": 6552,
+      "bounds": {
+        "min": [
+          -3.3459136486053467,
+          0.0,
+          -3.3400681018829346
+        ],
+        "max": [
+          5.150259971618652,
+          8.050114631652832,
+          5.410024166107178
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0.22,
+            3.3,
+            0.32
+          ],
+          "halfExtents": [
+            0.42,
+            3.3,
+            0.49
+          ]
+        }
+      ],
+      "description": "Wind-curved palm with modeled rachises and over six hundred folded leaflets; no billboard foliage."
+    },
+    {
+      "id": "streetlight",
+      "file": "streetlight.glb",
+      "lodFile": "streetlight_lod1.glb",
+      "triangles": 944,
+      "bounds": {
+        "min": [
+          -0.2199999988079071,
+          0.0,
+          -0.2199999988079071
+        ],
+        "max": [
+          0.2199999988079071,
+          7.481818675994873,
+          2.0
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            3.5,
+            0
+          ],
+          "halfExtents": [
+            0.11,
+            3.5,
+            0.11
+          ]
+        }
+      ],
+      "description": "7.4m municipal curved mast luminaire, inset lens, cast base and maintenance hatch."
+    },
+    {
+      "id": "bench",
+      "file": "bench.glb",
+      "lodFile": "bench_lod1.glb",
+      "triangles": 2464,
+      "bounds": {
+        "min": [
+          -0.9300000071525574,
+          0.0,
+          -0.4198164939880371
+        ],
+        "max": [
+          0.9300000071525574,
+          1.0233129262924194,
+          0.3100000023841858
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            0.5,
+            0
+          ],
+          "halfExtents": [
+            0.95,
+            0.5,
+            0.42
+          ]
+        }
+      ],
+      "description": "Timber and cast-metal public bench with slatted seat, backrest and rounded arm supports."
+    },
+    {
+      "id": "bollard",
+      "file": "bollard.glb",
+      "lodFile": "bollard_lod1.glb",
+      "triangles": 452,
+      "bounds": {
+        "min": [
+          -0.18000000715255737,
+          0.0,
+          -0.18000000715255737
+        ],
+        "max": [
+          0.18000000715255737,
+          0.9730000495910645,
+          0.18000000715255737
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            0.48,
+            0
+          ],
+          "halfExtents": [
+            0.09,
+            0.48,
+            0.09
+          ]
+        }
+      ],
+      "description": "Round capped steel traffic bollard with reflective band."
+    },
+    {
+      "id": "road",
+      "file": "road.glb",
+      "lodFile": "road_lod1.glb",
+      "triangles": 332,
+      "bounds": {
+        "min": [
+          -7.0,
+          -0.20000000298023224,
+          -16.0
+        ],
+        "max": [
+          7.0,
+          0.01499999314546585,
+          16.0
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            -0.1,
+            0
+          ],
+          "halfExtents": [
+            7,
+            0.1,
+            16
+          ]
+        }
+      ],
+      "description": "14m by 32m four-lane arterial pavement with correct 3.5m lanes and double center line."
+    },
+    {
+      "id": "sidewalk",
+      "file": "sidewalk.glb",
+      "lodFile": "sidewalk_lod1.glb",
+      "triangles": 12408,
+      "bounds": {
+        "min": [
+          -1.6200000047683716,
+          -0.06499999761581421,
+          -15.992500305175781
+        ],
+        "max": [
+          1.4900000095367432,
+          0.17499999701976776,
+          15.992500305175781
+        ]
+      },
+      "colliders": [
+        {
+          "center": [
+            0,
+            0.05,
+            0
+          ],
+          "halfExtents": [
+            1.63,
+            0.11,
+            16
+          ]
+        }
+      ],
+      "description": "3m by 32m sidewalk flags, radiused precast curb and inset storm drain grilles."
+    }
+  ]
+}
