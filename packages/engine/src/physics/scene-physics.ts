@@ -185,7 +185,10 @@ export class ScenePhysicsRuntime {
 
 function stablePhysicsId(value: string): number { let hash = 0xcbf29ce484222325n; for (const byte of new TextEncoder().encode(value)) { hash ^= BigInt(byte); hash = BigInt.asUintN(64, hash * 0x100000001b3n); } return Number(hash % 9007199254740990n) + 1; }
 function fingerprint(descriptor: PhysicsBodyDescriptor2d | PhysicsBodyDescriptor3d): string {
-  if (descriptor.bodyType !== "dynamic") return JSON.stringify(descriptor);
+  // Position kinematics move through setKinematicTarget. Recreating a body
+  // whenever its authored pose changes discards contacts and attached joints,
+  // and turns a swept kinematic move into an instantaneous teleport.
+  if (descriptor.bodyType !== "dynamic" && descriptor.bodyType !== "kinematicPosition") return JSON.stringify(descriptor);
   const { position: _position, rotation: _rotation, ...simulationSettings } = descriptor;
   return JSON.stringify(simulationSettings);
 }

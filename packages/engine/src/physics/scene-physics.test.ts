@@ -18,12 +18,29 @@ function fake2d() {
   };
   return { bridge: new PhysicsWorld2dBridge(wasm), commands };
 }
-function fake3d(): PhysicsWorld3dBridge {
-  const wasm: PhysicsEngine3dWasm = { apply_commands: (json) => JSON.parse(json).length, step_json: () => JSON.stringify({ bodies: [], events: [] }), raycast_json: () => "null", overlap_shape_json: () => "[]", cast_shape_json: () => "null", move_character_json: () => JSON.stringify({ translation: [0, 0, 0], grounded: false, slidingDownSlope: false, collisions: [] }), body_count: () => 0, joint_count: () => 0, free: () => undefined };
+function fake3d(commands: any[] = []): PhysicsWorld3dBridge {
+  const wasm: PhysicsEngine3dWasm = { apply_commands: (json) => { const batch = JSON.parse(json); commands.push(...batch); return batch.length; }, step_json: () => JSON.stringify({ bodies: [], events: [] }), raycast_json: () => "null", overlap_shape_json: () => "[]", cast_shape_json: () => "null", move_character_json: () => JSON.stringify({ translation: [0, 0, 0], grounded: false, slidingDownSlope: false, collisions: [] }), body_count: () => 0, joint_count: () => 0, free: () => undefined };
   return new PhysicsWorld3dBridge(wasm);
 }
 
 describe("ScenePhysicsRuntime", () => {
+  it.each(["2D", "3D"])("preserves moving %s kinematic bodies and sends their new targets", (dimension) => {
+    const scene = new SceneDocument(SceneDocument.empty("Moving platform"));
+    const entity = scene.addEntity("Platform");
+    scene.addComponent(entity.id, component(`vapour.Rigidbody${dimension}`, { bodyType: "kinematicPosition" }));
+    scene.addComponent(entity.id, component(`vapour.Collider${dimension}`));
+    const native2d = fake2d(), native3dCommands: any[] = [];
+    const runtime = new ScenePhysicsRuntime(scene, { physics2d: native2d.bridge, physics3d: fake3d(native3dCommands) });
+    const commands = dimension === "2D" ? native2d.commands : native3dCommands;
+    runtime.fixedUpdate(1 / 60);
+    scene.setTransform(entity.id, { position: [3, 2, 1], rotation: [0, 0, 0, 1], scale: [1, 1, 1] });
+    runtime.prepare();
+    runtime.fixedUpdate(1 / 60);
+    expect(commands.filter((value) => value.type === "insert")).toHaveLength(1);
+    expect(commands.filter((value) => value.type === "remove")).toHaveLength(0);
+    expect(commands.filter((value) => value.type === "setKinematicTarget").at(-1)?.position).toEqual(dimension === "2D" ? [3, 2] : [3, 2, 1]);
+  });
+
   it("creates native bodies, syncs dynamic poses, and does not recreate them each step", () => {
     const scene = new SceneDocument(SceneDocument.empty("Physics")), entity = scene.addEntity("Ball");
     scene.addComponent(entity.id, component("vapour.Rigidbody2D"));
