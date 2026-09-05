@@ -230,6 +230,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shadow_uniform_matches_wgsl_buffer_layout() {
+        let module = naga::front::wgsl::parse_str(crate::SHADOW_DEPTH_SHADER).unwrap();
+        let (_, uniform) = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("ShadowPass"))
+            .expect("shadow shader must declare its pass uniform");
+        let naga::TypeInner::Struct { members, span } = &uniform.inner else {
+            panic!("ShadowPass must be a uniform struct");
+        };
+        assert_eq!(
+            *span as usize,
+            std::mem::size_of::<ShadowPassUniform>(),
+            "WGSL uniform span must fit the Rust buffer bound at draw time"
+        );
+        assert_eq!(members[0].offset, 0);
+        assert_eq!(
+            members[1].offset as usize,
+            std::mem::offset_of!(ShadowPassUniform, far)
+        );
+    }
+
+    #[test]
     fn cascades_are_ordered_and_end_at_the_shadow_distance() {
         let cascades = shadow_cascades(&ViewState::default(), 16.0 / 9.0);
         assert!(cascades.windows(2).all(|pair| pair[0].far < pair[1].far));

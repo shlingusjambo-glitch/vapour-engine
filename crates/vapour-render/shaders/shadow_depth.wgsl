@@ -1,4 +1,9 @@
-struct ShadowPass { view_projection: mat4x4<f32>, far: f32, padding: vec3<f32> }
+// Scalars keep this final lane at 16 bytes. A vec3 after `far` would align to
+// the next lane and require 96 bytes, while Rust uploads an 80-byte uniform.
+struct ShadowPass {
+  view_projection: mat4x4<f32>, far: f32,
+  padding_0: f32, padding_1: f32, padding_2: f32,
+}
 @group(0) @binding(0) var<uniform> shadow: ShadowPass;
 struct Input {
   @location(0) position: vec3<f32>,
