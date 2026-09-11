@@ -45,6 +45,66 @@ export interface CompoundColliderChild3d {
   readonly rotation: readonly [number, number, number, number];
   readonly shape: ColliderShape3d;
 }
+/**
+ * How two colliders' friction or restitution coefficients are reconciled.
+ *
+ * `min` is the rule that makes "slippery wins" work, `max` the one that makes
+ * "bouncy wins" work, and `average` is the default because it is the least
+ * surprising. When the two sides disagree Rapier takes the stronger rule, in
+ * the order `max` > `multiply` > `min` > `average`.
+ */
+export type CombineRule = "average" | "min" | "max" | "multiply";
+
+/**
+ * A named surface. Define it once with {@link PhysicsWorld3dBridge.defineMaterial}
+ * and reference it from any number of bodies; retuning "ice" then changes every
+ * icy collider built after the redefinition (and, via `setMaterial`, before).
+ */
+export interface PhysicsMaterial {
+  readonly name: string;
+  readonly friction: number;
+  readonly restitution: number;
+  readonly frictionCombine?: CombineRule;
+  readonly restitutionCombine?: CombineRule;
+}
+
+/**
+ * Explicit mass, centre of mass, and inertia, replacing the density-derived
+ * values. Offsetting the centre of mass is what makes a bottom-heavy buoy
+ * right itself and a top-heavy crate tip.
+ */
+export interface MassProperties3d {
+  readonly mass: number;
+  /** In the body's own local space. */
+  readonly centerOfMass: readonly [number, number, number];
+  /** Principal moments; derived from the shape and `mass` when omitted. */
+  readonly principalInertia?: readonly [number, number, number];
+}
+
+/** What the solver carried in the last step. */
+export interface PhysicsStats3d {
+  readonly bodies: number;
+  readonly dynamic: number;
+  readonly kinematic: number;
+  readonly fixed: number;
+  readonly awake: number;
+  readonly sleeping: number;
+  readonly joints: number;
+  readonly materials: number;
+  readonly contactPairs: number;
+  readonly manifolds: number;
+  readonly contactPoints: number;
+}
+
+/** One solver contact in world space; `normal` points out of `bodyA`. */
+export interface ContactPoint3d {
+  readonly bodyA: number;
+  readonly bodyB: number;
+  readonly point: readonly [number, number, number];
+  readonly normal: readonly [number, number, number];
+  readonly distance: number;
+}
+
 export interface PhysicsBodyDescriptor3d {
   readonly id: number;
   readonly bodyType: PhysicsBodyType3d;
@@ -63,6 +123,11 @@ export interface PhysicsBodyDescriptor3d {
   readonly sensor?: boolean;
   readonly layer?: number;
   readonly mask?: number;
+  /** A material name; replaces `friction`/`restitution` and supplies combine rules. */
+  readonly material?: string;
+  readonly frictionCombine?: CombineRule;
+  readonly restitutionCombine?: CombineRule;
+  readonly massProperties?: MassProperties3d;
 }
 export type PhysicsEventKind =
   "collisionEnter" | "collisionExit" | "triggerEnter" | "triggerExit";
@@ -82,6 +147,8 @@ export interface PhysicsBodySnapshot3d {
 export interface PhysicsStep3d {
   readonly bodies: readonly PhysicsBodySnapshot3d[];
   readonly events: readonly PhysicsEvent3d[];
+  /** Absent only from WASM builds that predate physics statistics. */
+  readonly stats?: PhysicsStats3d;
 }
 export interface RaycastHit3d {
   readonly bodyId: number;
@@ -181,10 +248,19 @@ export interface JointSpec3d {
   readonly collideConnected?: boolean;
 }
 
+/** A descriptor with every default applied, as it crosses into WASM. */
+export type CompleteDescriptor3d = Omit<
+  Required<PhysicsBodyDescriptor3d>,
+  "material" | "massProperties"
+> & {
+  readonly material: string | null;
+  readonly massProperties: MassProperties3d | null;
+};
+
 export type PhysicsCommand3d =
   | {
       readonly type: "insert";
-      readonly descriptor: Required<PhysicsBodyDescriptor3d>;
+      readonly descriptor: CompleteDescriptor3d;
     }
   | { readonly type: "remove"; readonly id: number }
   | {
@@ -240,7 +316,9 @@ export type PhysicsCommand3d =
   | {
       readonly type: "setGravity";
       readonly gravity: readonly [number, number, number];
-    };
+    }
+  | { readonly type: "defineMaterial"; readonly material: Required<PhysicsMaterial> }
+  | { readonly type: "setMaterial"; readonly id: number; readonly name: string };
 
 export interface PhysicsEngine3dWasm {
   apply_commands(json: string): number;
@@ -252,6 +330,7 @@ export interface PhysicsEngine3dWasm {
     layer: number,
     mask: number,
     includeSensors: boolean,
+    excludeBody: number,
   ): string;
   overlap_shape_json(
     position: Float32Array,
@@ -280,6 +359,8 @@ export interface PhysicsEngine3dWasm {
   ): string;
   body_count(): number;
   joint_count(): number;
+  /** Absent from WASM builds that predate contact reporting. */
+  contacts_json?(): string;
   free(): void;
 }
 
@@ -438,6 +519,30 @@ export class PhysicsWorld3dBridge {
     vector(gravity, "gravity");
     this.#commands.push({ type: "setGravity", gravity: [...gravity] });
   }
+  /** Registers or redefines a named surface. Bodies inserted afterwards may
+   * reference it; bodies already built keep their coefficients until
+   * {@link setMaterial}. */
+  defineMaterial(material: PhysicsMaterial): void {
+    this.#commands.push({ type: "defineMaterial", material: validateMaterial(material) });
+  }
+  /** Re-surfaces an existing body: wet asphalt, an iced-over ramp. */
+  setMaterial(id: number, name: string): void {
+    validateId(id);
+    this.#commands.push({ type: "setMaterial", id, name: materialName(name) });
+  }
+  /** Solver contacts from the last step, for debug rendering. Empty on WASM
+   * builds that predate contact reporting. */
+  contacts(): readonly ContactPoint3d[] {
+    if (this.#wasm.contacts_json === undefined) return [];
+    let value: unknown;
+    try {
+      value = JSON.parse(this.#wasm.contacts_json());
+    } catch (error) {
+      throw new Error(`Rust 3D physics returned invalid contacts: ${message(error)}`, { cause: error });
+    }
+    if (!Array.isArray(value)) throw new Error("Rust 3D physics contacts must be an array.");
+    return value as ContactPoint3d[];
+  }
   flush(): number {
     if (this.#commands.length === 0) return 0;
     const count = this.#commands.length;
@@ -476,12 +581,18 @@ export class PhysicsWorld3dBridge {
       readonly layer?: number;
       readonly mask?: number;
       readonly includeSensors?: boolean;
+      /** A body the ray ignores — the one it is cast from. */
+      readonly excludeBody?: number;
     } = {},
   ): RaycastHit3d | undefined {
     vector(origin, "ray origin");
+    if (options.excludeBody !== undefined) validateId(options.excludeBody);
     vector(direction, "ray direction");
     if (!Number.isFinite(maxDistance) || maxDistance <= 0)
       throw new Error("Ray maximum distance must be finite and positive.");
+    // Queries must observe bodies queued since the previous simulation step.
+    // Vehicle suspension casts commonly run immediately after construction.
+    this.flush();
     const layer = bits(options.layer ?? 1, "ray layer"),
       mask = bits(options.mask ?? 0xffff_ffff, "ray mask");
     let value: unknown;
@@ -494,6 +605,7 @@ export class PhysicsWorld3dBridge {
           layer,
           mask,
           options.includeSensors ?? false,
+          options.excludeBody ?? 0,
         ),
       );
     } catch (error) {
@@ -624,12 +736,19 @@ export class PhysicsWorld3dBridge {
   }
 }
 
-function defaults(
-  value: PhysicsBodyDescriptor3d,
-): Required<PhysicsBodyDescriptor3d> {
+function defaults(value: PhysicsBodyDescriptor3d): CompleteDescriptor3d {
   vector(value.position, "body position");
   quaternion(value.rotation);
   validateShape(value.shape);
+  if (value.massProperties !== undefined) {
+    positive(value.massProperties.mass, "mass");
+    vector(value.massProperties.centerOfMass, "centre of mass");
+    if (value.massProperties.principalInertia !== undefined) {
+      vector(value.massProperties.principalInertia, "principal inertia");
+      if (value.massProperties.principalInertia.some((item) => item < 0))
+        throw new Error("Physics principal inertia must be non-negative.");
+    }
+  }
   return {
     ...value,
     position: [...value.position],
@@ -647,6 +766,33 @@ function defaults(
     sensor: value.sensor ?? false,
     layer: bits(value.layer ?? 1, "collision layer"),
     mask: bits(value.mask ?? 0xffff_ffff, "collision mask"),
+    material: value.material === undefined ? null : materialName(value.material),
+    frictionCombine: combineRule(value.frictionCombine),
+    restitutionCombine: combineRule(value.restitutionCombine),
+    massProperties: value.massProperties === undefined ? null : structuredClone(value.massProperties),
+  };
+}
+const COMBINE_RULES: readonly CombineRule[] = ["average", "min", "max", "multiply"];
+function combineRule(value: CombineRule | undefined): CombineRule {
+  const rule = value ?? "average";
+  if (!COMBINE_RULES.includes(rule)) throw new Error(`Physics combine rule must be one of ${COMBINE_RULES.join(", ")}.`);
+  return rule;
+}
+function materialName(value: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error("Physics material name cannot be empty.");
+  return value;
+}
+/** Validates a material before it crosses the WASM boundary. */
+export function validateMaterial(value: PhysicsMaterial): Required<PhysicsMaterial> {
+  const name = materialName(value.name);
+  for (const [item, label] of [[value.friction, "friction"], [value.restitution, "restitution"]] as const)
+    if (!Number.isFinite(item) || item < 0) throw new Error(`Physics material '${name}' ${label} must be finite and non-negative.`);
+  return {
+    name,
+    friction: value.friction,
+    restitution: value.restitution,
+    frictionCombine: combineRule(value.frictionCombine),
+    restitutionCombine: combineRule(value.restitutionCombine),
   };
 }
 function validateShape(shape: ColliderShape3d): void {

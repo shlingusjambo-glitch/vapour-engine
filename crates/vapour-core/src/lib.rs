@@ -16,10 +16,11 @@ pub use physics2d::{
     RaycastHit2d, ShapeCastHit2d,
 };
 pub use physics3d::{
-    BodyType3d, CharacterControllerDescriptor3d, CharacterMovement3d, ColliderShape3d,
-    CompoundColliderChild3d, JointDescriptor3d, JointSpec3d, PhysicsBodyDescriptor3d,
-    PhysicsBodySnapshot3d, PhysicsError3d, PhysicsEvent3d, PhysicsEventKind, PhysicsWorld3d,
-    RaycastHit3d, ShapeCastHit3d,
+    BodyType3d, CharacterControllerDescriptor3d, CharacterMovement3d, ColliderShape3d, CombineRule,
+    CompoundColliderChild3d, ContactPoint3d, JointDescriptor3d, JointSpec3d, MassProperties3d,
+    PhysicsBodyDescriptor3d, PhysicsBodySnapshot3d, PhysicsError3d, PhysicsEvent3d,
+    PhysicsEventKind, PhysicsMaterial, PhysicsStats3d, PhysicsWorld3d, RaycastHit3d,
+    ShapeCastHit3d,
 };
 pub use scene::{ComponentRecord, SCENE_FORMAT_VERSION, SceneAsset, SceneEntity, SceneError};
 pub use sparse_set::SparseSet;

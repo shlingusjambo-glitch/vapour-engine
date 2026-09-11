@@ -72,6 +72,69 @@ pub struct CompoundColliderChild3d {
     pub shape: ColliderShape3d,
 }
 
+/// How two colliders' friction or restitution coefficients are reconciled.
+///
+/// Contacts involve two surfaces, so a single coefficient per collider is not
+/// enough to say what happens when rubber meets ice. `Min` is the rule that
+/// makes "slippery wins" work, `Max` the one that makes "bouncy wins" work, and
+/// `Average` is the default because it is the least surprising.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CombineRule {
+    #[default]
+    Average,
+    Min,
+    Max,
+    Multiply,
+}
+
+impl From<CombineRule> for CoefficientCombineRule {
+    fn from(value: CombineRule) -> Self {
+        match value {
+            CombineRule::Average => Self::Average,
+            CombineRule::Min => Self::Min,
+            CombineRule::Max => Self::Max,
+            CombineRule::Multiply => Self::Multiply,
+        }
+    }
+}
+
+/// A named surface: friction, restitution, and how each combines with another
+/// collider's.
+///
+/// Naming it is the point. "ice" defined once and referenced by every icy
+/// collider is one place to retune when skating feels wrong, and it survives a
+/// scene round trip as a short string instead of four duplicated numbers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicsMaterial {
+    pub name: String,
+    pub friction: f32,
+    pub restitution: f32,
+    #[serde(default)]
+    pub friction_combine: CombineRule,
+    #[serde(default)]
+    pub restitution_combine: CombineRule,
+}
+
+/// Explicit mass, centre of mass, and inertia, replacing the density-derived
+/// values.
+///
+/// Offsetting the centre of mass is what makes a weighted object behave like
+/// one: a bottom-heavy buoy rights itself, a top-heavy crate tips. Density
+/// alone always puts the centre of mass at the shape's centroid.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MassProperties3d {
+    pub mass: f32,
+    /// Centre of mass in the body's own local space.
+    pub center_of_mass: [f32; 3],
+    /// Principal moments of inertia. Derived from `mass` and the shape's
+    /// extents when omitted, which is what most callers want.
+    #[serde(default)]
+    pub principal_inertia: Option<[f32; 3]>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PhysicsBodyDescriptor3d {
@@ -95,6 +158,18 @@ pub struct PhysicsBodyDescriptor3d {
     pub layer: u32,
     /// Layers this collider accepts.
     pub mask: u32,
+    /// A material registered with [`PhysicsWorld3d::define_material`]. It
+    /// replaces `friction` and `restitution` and supplies the combine rules.
+    #[serde(default)]
+    pub material: Option<String>,
+    /// Combine rules used when no material is named.
+    #[serde(default)]
+    pub friction_combine: CombineRule,
+    #[serde(default)]
+    pub restitution_combine: CombineRule,
+    /// Overrides the density-derived mass, centre of mass, and inertia.
+    #[serde(default)]
+    pub mass_properties: Option<MassProperties3d>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,6 +198,41 @@ pub struct PhysicsEvent3d {
     pub kind: PhysicsEventKind,
     pub body_a: u64,
     pub body_b: u64,
+}
+
+/// One solver contact, in world space. Debug rendering's raw material.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPoint3d {
+    pub body_a: u64,
+    pub body_b: u64,
+    pub point: [f32; 3],
+    /// Points out of `body_a`.
+    pub normal: [f32; 3],
+    /// Negative while the shapes overlap.
+    pub distance: f32,
+}
+
+/// What the solver is actually carrying this step.
+///
+/// Body counts split by type and by sleep state are the two numbers that
+/// explain a physics frame: a world with 4000 bodies of which 40 are awake
+/// costs nothing, and the same world with all 4000 awake is the hitch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicsStats3d {
+    pub bodies: usize,
+    pub dynamic: usize,
+    pub kinematic: usize,
+    pub fixed: usize,
+    pub awake: usize,
+    pub sleeping: usize,
+    pub joints: usize,
+    pub materials: usize,
+    /// Collider pairs the narrow phase is tracking.
+    pub contact_pairs: usize,
+    pub manifolds: usize,
+    pub contact_points: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -267,6 +377,10 @@ pub enum PhysicsError3d {
     ZeroJointAxis,
     #[error("joint limits must be ordered as [min, max]")]
     InvalidJointLimits,
+    #[error("physics material name cannot be empty")]
+    EmptyMaterialName,
+    #[error("unknown physics material '{0}'")]
+    UnknownMaterial(String),
 }
 
 /// Rust-owned general 3D rigid-body world. Rapier handles never cross the
@@ -276,6 +390,7 @@ pub struct PhysicsWorld3d {
     bodies: HashMap<u64, (RigidBodyHandle, ColliderHandle)>,
     collider_ids: HashMap<ColliderHandle, u64>,
     joints: HashMap<u64, ImpulseJointHandle>,
+    materials: HashMap<String, PhysicsMaterial>,
     collision_send: Sender<CollisionEvent>,
     collision_recv: Receiver<CollisionEvent>,
     force_send: Sender<ContactForceEvent>,
@@ -300,6 +415,7 @@ impl PhysicsWorld3d {
             bodies: HashMap::new(),
             collider_ids: HashMap::new(),
             joints: HashMap::new(),
+            materials: HashMap::new(),
             collision_send,
             collision_recv,
             force_send,
@@ -317,11 +433,79 @@ impl PhysicsWorld3d {
         self.bodies.len()
     }
 
+    /// Registers a named surface, replacing any material of the same name.
+    ///
+    /// Redefinition is deliberate: retuning "ice" at runtime is how a game
+    /// makes a road icy in the rain. It affects colliders assigned the material
+    /// from then on, not colliders already built from it — call
+    /// [`Self::set_material`] for those.
+    pub fn define_material(&mut self, material: PhysicsMaterial) -> Result<(), PhysicsError3d> {
+        if material.name.trim().is_empty() {
+            return Err(PhysicsError3d::EmptyMaterialName);
+        }
+        non_negative(material.friction, "material friction")?;
+        non_negative(material.restitution, "material restitution")?;
+        self.materials.insert(material.name.clone(), material);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn material(&self, name: &str) -> Option<&PhysicsMaterial> {
+        self.materials.get(name)
+    }
+
+    #[must_use]
+    pub fn material_count(&self) -> usize {
+        self.materials.len()
+    }
+
+    /// Re-surfaces an existing collider. Wet asphalt, an iced-over ramp.
+    pub fn set_material(&mut self, id: u64, name: &str) -> Result<(), PhysicsError3d> {
+        let material = self
+            .materials
+            .get(name)
+            .ok_or_else(|| PhysicsError3d::UnknownMaterial(name.to_owned()))?
+            .clone();
+        let (body, handle) = *self
+            .bodies
+            .get(&id)
+            .ok_or(PhysicsError3d::UnknownBody(id))?;
+        let collider = self
+            .inner
+            .colliders
+            .get_mut(handle)
+            .ok_or(PhysicsError3d::UnknownBody(id))?;
+        collider.set_friction(material.friction);
+        collider.set_restitution(material.restitution);
+        collider.set_friction_combine_rule(material.friction_combine.into());
+        collider.set_restitution_combine_rule(material.restitution_combine.into());
+        // A sleeping body would keep sliding on its old friction until
+        // something else disturbed it, which reads as the change not working.
+        if let Some(body) = self.inner.bodies.get_mut(body) {
+            body.wake_up(true);
+        }
+        Ok(())
+    }
+
     pub fn insert(&mut self, descriptor: PhysicsBodyDescriptor3d) -> Result<(), PhysicsError3d> {
         validate_descriptor(&descriptor)?;
         if self.bodies.contains_key(&descriptor.id) {
             return Err(PhysicsError3d::DuplicateBody(descriptor.id));
         }
+        let surface = match &descriptor.material {
+            Some(name) => self
+                .materials
+                .get(name)
+                .ok_or_else(|| PhysicsError3d::UnknownMaterial(name.clone()))?
+                .clone(),
+            None => PhysicsMaterial {
+                name: String::new(),
+                friction: descriptor.friction,
+                restitution: descriptor.restitution,
+                friction_combine: descriptor.friction_combine,
+                restitution_combine: descriptor.restitution_combine,
+            },
+        };
         let rotation = quaternion(descriptor.rotation)?;
         let position = Pose::from_parts(descriptor.position.into(), rotation);
         let mut body = match descriptor.body_type {
@@ -344,14 +528,19 @@ impl PhysicsWorld3d {
             Group::from_bits_truncate(descriptor.mask),
             InteractionTestMode::And,
         );
-        let collider = collider_builder(&descriptor.shape)?
+        let mut collider = collider_builder(&descriptor.shape)?
             .density(descriptor.density)
-            .friction(descriptor.friction)
-            .restitution(descriptor.restitution)
+            .friction(surface.friction)
+            .restitution(surface.restitution)
+            .friction_combine_rule(surface.friction_combine.into())
+            .restitution_combine_rule(surface.restitution_combine.into())
             .sensor(descriptor.sensor)
             .collision_groups(groups)
             .active_events(ActiveEvents::COLLISION_EVENTS)
             .user_data(u128::from(descriptor.id));
+        if let Some(mass) = descriptor.mass_properties {
+            collider = collider.mass_properties(mass_properties(&descriptor.shape, mass)?);
+        }
         let (body_handle, collider_handle) = self.inner.insert(body, collider);
         self.bodies
             .insert(descriptor.id, (body_handle, collider_handle));
@@ -548,6 +737,14 @@ impl PhysicsWorld3d {
         let collector =
             ChannelEventCollector::new(self.collision_send.clone(), self.force_send.clone());
         self.inner.step_with_events(&(), &collector);
+        // Rapier keeps user forces until explicitly cleared. Vapour's command
+        // API treats addForce/addForceAtPoint/addTorque as forces for the next
+        // fixed step, matching how gameplay systems submit suspension, tyre,
+        // and movement forces once per update.
+        for (_, body) in self.inner.bodies.iter_mut() {
+            body.reset_forces(false);
+            body.reset_torques(false);
+        }
         while self.force_recv.try_recv().is_ok() {}
         let mut events = Vec::new();
         while let Ok(event) = self.collision_recv.try_recv() {
@@ -596,6 +793,104 @@ impl PhysicsWorld3d {
         snapshots
     }
 
+    /// The mass, centre of mass, and principal inertia Rapier is simulating
+    /// for a body, whether it came from density or from an explicit override.
+    pub fn mass_properties_of(&self, id: u64) -> Result<MassProperties3d, PhysicsError3d> {
+        let handle = self
+            .bodies
+            .get(&id)
+            .map(|entry| entry.0)
+            .ok_or(PhysicsError3d::UnknownBody(id))?;
+        let body = self
+            .inner
+            .bodies
+            .get(handle)
+            .ok_or(PhysicsError3d::UnknownBody(id))?;
+        let local = &body.mass_properties().local_mprops;
+        Ok(MassProperties3d {
+            mass: local.mass(),
+            center_of_mass: local.local_com.into(),
+            principal_inertia: Some(local.principal_inertia().into()),
+        })
+    }
+
+    /// Every solver contact from the last step, in world space.
+    ///
+    /// Only pairs the solver actually resolved are included: sensors and
+    /// filtered pairs have no solver contacts, which is also what a debug view
+    /// wants to show.
+    #[must_use]
+    pub fn contacts(&self) -> Vec<ContactPoint3d> {
+        let mut contacts = Vec::new();
+        for pair in self.inner.narrow_phase.contact_pairs() {
+            let (Some(&body_a), Some(&body_b)) = (
+                self.collider_ids.get(&pair.collider1),
+                self.collider_ids.get(&pair.collider2),
+            ) else {
+                continue;
+            };
+            for manifold in &pair.manifolds {
+                for contact in &manifold.data.solver_contacts {
+                    contacts.push(ContactPoint3d {
+                        body_a,
+                        body_b,
+                        point: contact.point.into(),
+                        normal: manifold.data.normal.into(),
+                        distance: contact.dist,
+                    });
+                }
+            }
+        }
+        contacts.sort_by(|a, b| {
+            (a.body_a, a.body_b).cmp(&(b.body_a, b.body_b)).then(
+                a.point
+                    .partial_cmp(&b.point)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+        });
+        contacts
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> PhysicsStats3d {
+        let mut stats = PhysicsStats3d {
+            bodies: self.bodies.len(),
+            joints: self.joints.len(),
+            materials: self.materials.len(),
+            ..PhysicsStats3d::default()
+        };
+        for &(handle, _) in self.bodies.values() {
+            let Some(body) = self.inner.bodies.get(handle) else {
+                continue;
+            };
+            match body.body_type() {
+                RigidBodyType::Dynamic => stats.dynamic += 1,
+                RigidBodyType::Fixed => stats.fixed += 1,
+                RigidBodyType::KinematicPositionBased | RigidBodyType::KinematicVelocityBased => {
+                    stats.kinematic += 1;
+                }
+            }
+            if body.is_sleeping() || body.is_fixed() {
+                stats.sleeping += 1;
+            } else {
+                stats.awake += 1;
+            }
+        }
+        for pair in self.inner.narrow_phase.contact_pairs() {
+            stats.contact_pairs += 1;
+            stats.manifolds += pair.manifolds.len();
+            stats.contact_points += pair
+                .manifolds
+                .iter()
+                .map(|manifold| manifold.data.solver_contacts.len())
+                .sum::<usize>();
+        }
+        stats
+    }
+
+    /// `exclude` skips one body, which is what a ray cast from inside your
+    /// own collider needs: a vehicle's wheel rays start inside the chassis.
+    #[allow(clippy::too_many_arguments)]
     pub fn raycast(
         &self,
         origin: [f32; 3],
@@ -604,6 +899,7 @@ impl PhysicsWorld3d {
         layer: u32,
         mask: u32,
         include_sensors: bool,
+        exclude: Option<u64>,
     ) -> Result<Option<RaycastHit3d>, PhysicsError3d> {
         finite3(origin, "ray origin")?;
         finite3(direction, "ray direction")?;
@@ -622,6 +918,13 @@ impl PhysicsWorld3d {
         let mut filter = QueryFilter::default().groups(groups);
         if !include_sensors {
             filter = filter.exclude_sensors();
+        }
+        if let Some(id) = exclude {
+            let (body, _) = *self
+                .bodies
+                .get(&id)
+                .ok_or(PhysicsError3d::UnknownBody(id))?;
+            filter = filter.exclude_rigid_body(body);
         }
         let ray = Ray::new(origin.into(), direction);
         Ok(self
@@ -947,6 +1250,41 @@ fn collider_builder(shape: &ColliderShape3d) -> Result<ColliderBuilder, PhysicsE
     })
 }
 
+/// Rapier mass properties for an explicit override.
+///
+/// When the caller gives no inertia, the shape's own inertia about its
+/// centroid is scaled to the requested mass and reused about the new centre —
+/// a "weighted crate" keeps a crate's inertia. It is an approximation, but the
+/// exact answer needs to know where the extra mass sits, which is what
+/// `principal_inertia` is for.
+fn mass_properties(
+    shape: &ColliderShape3d,
+    value: MassProperties3d,
+) -> Result<MassProperties, PhysicsError3d> {
+    positive(value.mass, "mass")?;
+    finite3(value.center_of_mass, "centre of mass")?;
+    let center = Vector::from(value.center_of_mass);
+    Ok(match value.principal_inertia {
+        Some(inertia) => {
+            finite3(inertia, "principal inertia")?;
+            if inertia.iter().any(|value| *value < 0.0) {
+                return Err(PhysicsError3d::NonNegative("principal inertia"));
+            }
+            MassProperties::new(center, value.mass, Vector::from(inertia))
+        }
+        None => {
+            let shape_props = collider_builder(shape)?.build().mass_properties();
+            let scale = value.mass / shape_props.mass().max(f32::EPSILON);
+            MassProperties::with_principal_inertia_frame(
+                center,
+                value.mass,
+                shape_props.principal_inertia() * scale,
+                shape_props.principal_inertia_local_frame,
+            )
+        }
+    })
+}
+
 fn validate_points(
     points: &[[f32; 3]],
     label: &'static str,
@@ -984,6 +1322,9 @@ fn validate_descriptor(value: &PhysicsBodyDescriptor3d) -> Result<(), PhysicsErr
         return Err(PhysicsError3d::EmptyLayer);
     }
     let _ = collider_builder(&value.shape)?;
+    if let Some(mass) = value.mass_properties {
+        let _ = mass_properties(&value.shape, mass)?;
+    }
     Ok(())
 }
 fn quaternion(value: [f32; 4]) -> Result<Rotation, PhysicsError3d> {
@@ -1060,6 +1401,10 @@ mod tests {
             sensor: false,
             layer: 1,
             mask: u32::MAX,
+            material: None,
+            friction_combine: CombineRule::Average,
+            restitution_combine: CombineRule::Average,
+            mass_properties: None,
         }
     }
 
@@ -1504,7 +1849,15 @@ mod tests {
             .unwrap();
         world.step(1.0 / 60.0).unwrap();
         let hit = world
-            .raycast([0.0, 0.0, 4.0], [0.0, 0.0, -2.0], 10.0, 1, u32::MAX, false)
+            .raycast(
+                [0.0, 0.0, 4.0],
+                [0.0, 0.0, -2.0],
+                10.0,
+                1,
+                u32::MAX,
+                false,
+                None,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(hit.body_id, 7);
@@ -1540,7 +1893,15 @@ mod tests {
         world.step(1.0 / 60.0).unwrap();
         for x in [-2.0, 2.0] {
             let hit = world
-                .raycast([x, 0.0, 3.0], [0.0, 0.0, -1.0], 10.0, 1, u32::MAX, false)
+                .raycast(
+                    [x, 0.0, 3.0],
+                    [0.0, 0.0, -1.0],
+                    10.0,
+                    1,
+                    u32::MAX,
+                    false,
+                    None,
+                )
                 .unwrap();
             assert_eq!(hit.map(|value| value.body_id), Some(8));
         }
@@ -1576,7 +1937,15 @@ mod tests {
         plane_world.step(1.0 / 60.0).unwrap();
         assert_eq!(
             plane_world
-                .raycast([0.0, 2.0, 0.0], [0.0, -1.0, 0.0], 10.0, 1, u32::MAX, false)
+                .raycast(
+                    [0.0, 2.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                    10.0,
+                    1,
+                    u32::MAX,
+                    false,
+                    None
+                )
                 .unwrap()
                 .unwrap()
                 .body_id,
@@ -1790,6 +2159,323 @@ mod tests {
         );
         world.set_angular_velocity(4, [1.0, 2.0, 3.0]).unwrap();
         assert_eq!(world.snapshots()[0].angular_velocity, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn submitted_forces_apply_to_one_step() {
+        let mut world = PhysicsWorld3d::new([0.0, 0.0, 0.0]);
+        world
+            .insert(body(
+                4,
+                BodyType3d::Dynamic,
+                0.0,
+                ColliderShape3d::Sphere { radius: 0.5 },
+            ))
+            .unwrap();
+        world.add_force(4, [10.0, 0.0, 0.0]).unwrap();
+        world.step(1.0 / 60.0).unwrap();
+        let after_force = world.snapshots()[0].linear_velocity[0];
+        world.step(1.0 / 60.0).unwrap();
+        let after_coast = world.snapshots()[0].linear_velocity[0];
+        assert!(after_force > 0.0);
+        assert!(
+            after_coast <= after_force,
+            "a force command persisted into the following step: {after_force} -> {after_coast}"
+        );
+    }
+
+    fn ground() -> PhysicsBodyDescriptor3d {
+        body(
+            1,
+            BodyType3d::Static,
+            -0.5,
+            ColliderShape3d::Box {
+                half_extents: [10.0, 0.5, 10.0],
+            },
+        )
+    }
+
+    fn material(name: &str, friction: f32, rule: CombineRule) -> PhysicsMaterial {
+        PhysicsMaterial {
+            name: name.into(),
+            friction,
+            restitution: 0.0,
+            friction_combine: rule,
+            restitution_combine: rule,
+        }
+    }
+
+    /// The effective friction Rapier solved a resting box against the ground with.
+    fn solved_friction(ground_rule: CombineRule, box_rule: CombineRule) -> f32 {
+        let mut world = PhysicsWorld3d::default();
+        world
+            .define_material(material("floor", 0.2, ground_rule))
+            .unwrap();
+        world
+            .define_material(material("crate", 0.8, box_rule))
+            .unwrap();
+        let mut floor = ground();
+        floor.material = Some("floor".into());
+        world.insert(floor).unwrap();
+        let mut crate_ = body(
+            2,
+            BodyType3d::Dynamic,
+            0.5,
+            ColliderShape3d::Box {
+                half_extents: [0.5; 3],
+            },
+        );
+        crate_.material = Some("crate".into());
+        world.insert(crate_).unwrap();
+        for _ in 0..5 {
+            world.step(1.0 / 60.0).unwrap();
+        }
+        let pair = world
+            .inner
+            .narrow_phase
+            .contact_pairs()
+            .next()
+            .expect("box should rest on the floor");
+        pair.manifolds[0].data.solver_contacts[0].friction
+    }
+
+    #[test]
+    fn combine_rules_produce_the_expected_coefficient() {
+        // Rapier resolves conflicting rules by taking the "stronger" one in the
+        // order Max > Multiply > Min > Average, so matched rules are the clear
+        // cases and Average versus Min shows Min winning.
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(near(
+            solved_friction(CombineRule::Average, CombineRule::Average),
+            0.5
+        ));
+        assert!(near(
+            solved_friction(CombineRule::Min, CombineRule::Min),
+            0.2
+        ));
+        assert!(near(
+            solved_friction(CombineRule::Max, CombineRule::Max),
+            0.8
+        ));
+        assert!(near(
+            solved_friction(CombineRule::Multiply, CombineRule::Multiply),
+            0.16
+        ));
+        assert!(near(
+            solved_friction(CombineRule::Average, CombineRule::Min),
+            0.2
+        ));
+    }
+
+    #[test]
+    fn restitution_material_makes_a_ball_bounce() {
+        let bounce = |restitution: f32| {
+            let mut world = PhysicsWorld3d::default();
+            world
+                .define_material(PhysicsMaterial {
+                    name: "rubber".into(),
+                    friction: 0.5,
+                    restitution,
+                    friction_combine: CombineRule::Average,
+                    restitution_combine: CombineRule::Max,
+                })
+                .unwrap();
+            world.insert(ground()).unwrap();
+            let mut ball = body(
+                2,
+                BodyType3d::Dynamic,
+                3.0,
+                ColliderShape3d::Sphere { radius: 0.5 },
+            );
+            ball.material = Some("rubber".into());
+            world.insert(ball).unwrap();
+            let mut peak: f32 = 0.0;
+            let mut landed = false;
+            for _ in 0..240 {
+                world.step(1.0 / 60.0).unwrap();
+                let y = position_of(&world, 2)[1];
+                if y < 0.6 {
+                    landed = true;
+                }
+                if landed {
+                    peak = peak.max(y);
+                }
+            }
+            peak
+        };
+        let dead = bounce(0.1);
+        let lively = bounce(0.9);
+        assert!(dead < 0.8, "restitution 0.1 rebounded to {dead}");
+        assert!(lively > 1.5, "restitution 0.9 rebounded to {lively}");
+    }
+
+    #[test]
+    fn set_material_changes_an_existing_collider() {
+        let mut world = PhysicsWorld3d::default();
+        world
+            .define_material(material("ice", 0.02, CombineRule::Min))
+            .unwrap();
+        world.insert(ground()).unwrap();
+        assert_eq!(
+            world.set_material(1, "mud"),
+            Err(PhysicsError3d::UnknownMaterial("mud".into()))
+        );
+        assert_eq!(
+            world.set_material(9, "ice"),
+            Err(PhysicsError3d::UnknownBody(9))
+        );
+        world.set_material(1, "ice").unwrap();
+        let collider = world.inner.colliders.get(world.bodies[&1].1).unwrap();
+        assert!((collider.friction() - 0.02).abs() < 1e-6);
+        assert_eq!(
+            collider.friction_combine_rule(),
+            CoefficientCombineRule::Min
+        );
+        assert_eq!(world.material_count(), 1);
+        assert_eq!(world.material("ice").map(|m| m.friction), Some(0.02));
+    }
+
+    #[test]
+    fn explicit_mass_properties_set_the_inertia_frame() {
+        let mut world = PhysicsWorld3d::new([0.0; 3]);
+        let mut crate_ = body(
+            1,
+            BodyType3d::Dynamic,
+            0.0,
+            ColliderShape3d::Box {
+                half_extents: [0.5; 3],
+            },
+        );
+        crate_.mass_properties = Some(MassProperties3d {
+            mass: 4.0,
+            center_of_mass: [0.25, -0.4, 0.0],
+            principal_inertia: Some([1.0, 2.0, 3.0]),
+        });
+        world.insert(crate_).unwrap();
+        let props = world.mass_properties_of(1).unwrap();
+        assert!((props.mass - 4.0).abs() < 1e-5, "mass {}", props.mass);
+        assert_eq!(props.center_of_mass, [0.25, -0.4, 0.0]);
+        let inertia = props.principal_inertia.unwrap();
+        for (actual, expected) in inertia.iter().zip([1.0, 2.0, 3.0]) {
+            assert!((actual - expected).abs() < 1e-4, "inertia {inertia:?}");
+        }
+
+        // Omitting the inertia scales the shape's own tensor to the mass: a
+        // unit cube of mass 4 has I = m/6 = 0.6667 about every axis.
+        let mut derived = body(
+            2,
+            BodyType3d::Dynamic,
+            0.0,
+            ColliderShape3d::Box {
+                half_extents: [0.5; 3],
+            },
+        );
+        derived.mass_properties = Some(MassProperties3d {
+            mass: 4.0,
+            center_of_mass: [0.0, 0.0, 0.0],
+            principal_inertia: None,
+        });
+        world.insert(derived).unwrap();
+        let derived = world
+            .mass_properties_of(2)
+            .unwrap()
+            .principal_inertia
+            .unwrap();
+        for value in derived {
+            assert!(
+                (value - 4.0 / 6.0).abs() < 1e-3,
+                "derived inertia {derived:?}"
+            );
+        }
+
+        let mut bad = body(
+            3,
+            BodyType3d::Dynamic,
+            0.0,
+            ColliderShape3d::Sphere { radius: 1.0 },
+        );
+        bad.mass_properties = Some(MassProperties3d {
+            mass: 0.0,
+            center_of_mass: [0.0; 3],
+            principal_inertia: None,
+        });
+        assert_eq!(world.insert(bad), Err(PhysicsError3d::Positive("mass")));
+    }
+
+    #[test]
+    fn offset_centre_of_mass_tips_a_box_toward_the_weight() {
+        let mut world = PhysicsWorld3d::default();
+        world.insert(ground()).unwrap();
+        let mut crate_ = body(
+            2,
+            BodyType3d::Dynamic,
+            0.5,
+            ColliderShape3d::Box {
+                half_extents: [0.5; 3],
+            },
+        );
+        // Weight hanging past the +X edge of the footprint: gravity's torque
+        // about that edge rolls the box over toward +X, i.e. negative about Z.
+        crate_.mass_properties = Some(MassProperties3d {
+            mass: 2.0,
+            center_of_mass: [0.9, 0.3, 0.0],
+            principal_inertia: None,
+        });
+        world.insert(crate_).unwrap();
+        for _ in 0..60 {
+            world.step(1.0 / 60.0).unwrap();
+        }
+        let snapshot = world.snapshots().into_iter().find(|s| s.id == 2).unwrap();
+        assert!(
+            snapshot.angular_velocity[2] < -0.1 || snapshot.rotation[2] < -0.05,
+            "box did not tip toward +X: {snapshot:?}"
+        );
+        assert!(
+            snapshot.position[0] > 0.05,
+            "box did not roll toward +X: {snapshot:?}"
+        );
+    }
+
+    #[test]
+    fn stats_and_contacts_describe_the_resting_scene() {
+        let mut world = PhysicsWorld3d::default();
+        world.insert(ground()).unwrap();
+        world
+            .insert(body(
+                2,
+                BodyType3d::Dynamic,
+                0.5,
+                ColliderShape3d::Sphere { radius: 0.5 },
+            ))
+            .unwrap();
+        world
+            .insert(body(
+                3,
+                BodyType3d::KinematicPosition,
+                5.0,
+                ColliderShape3d::Sphere { radius: 0.5 },
+            ))
+            .unwrap();
+        assert_eq!(world.stats().contact_points, 0);
+        for _ in 0..10 {
+            world.step(1.0 / 60.0).unwrap();
+        }
+        let stats = world.stats();
+        assert_eq!(
+            (stats.bodies, stats.dynamic, stats.kinematic, stats.fixed),
+            (3, 1, 1, 1)
+        );
+        assert_eq!(stats.awake + stats.sleeping, 3);
+        assert_eq!(stats.contact_pairs, 1);
+        assert_eq!(stats.manifolds, 1);
+        assert!(stats.contact_points >= 1);
+        let contacts = world.contacts();
+        assert_eq!(contacts.len(), stats.contact_points);
+        let contact = contacts[0];
+        assert_eq!((contact.body_a, contact.body_b), (1, 2));
+        assert!(contact.point[1].abs() < 0.05, "contact {contact:?}");
+        assert!(contact.normal[1].abs() > 0.99, "contact {contact:?}");
+        assert!(contact.distance < 0.01, "contact {contact:?}");
     }
 }
 

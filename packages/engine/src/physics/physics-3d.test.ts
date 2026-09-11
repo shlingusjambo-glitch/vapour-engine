@@ -92,7 +92,10 @@ describe("PhysicsWorld3dBridge", () => {
       1,
       0xffff_ffff,
       false,
+      0,
     );
+    world.raycast([0, 0, 4], [0, 0, -1], 10, { excludeBody: 3 });
+    expect(wasm.raycast_json).toHaveBeenLastCalledWith(expect.any(Float32Array), expect.any(Float32Array), 10, 1, 0xffff_ffff, false, 3);
   });
   it("exposes exact overlap and swept-shape queries", () => {
     const world = new PhysicsWorld3dBridge(fake());
@@ -314,5 +317,54 @@ describe("PhysicsWorld3dBridge", () => {
     expect(initialize).toHaveBeenCalled();
     world.destroy();
     expect(instance.free).toHaveBeenCalled();
+  });
+  it("batches materials, combine rules, and explicit mass properties", () => {
+    const wasm = fake(),
+      world = new PhysicsWorld3dBridge(wasm);
+    world.defineMaterial({ name: "ice", friction: 0.02, restitution: 0.1, frictionCombine: "min" });
+    world.insert({
+      id: 1,
+      bodyType: "dynamic",
+      position: [0, 2, 0],
+      rotation: [0, 0, 0, 1],
+      shape: { type: "box", halfExtents: [0.5, 0.5, 0.5] },
+      material: "ice",
+      massProperties: { mass: 4, centerOfMass: [0.2, -0.3, 0] },
+    });
+    world.insert({
+      id: 2,
+      bodyType: "dynamic",
+      position: [0, 2, 0],
+      rotation: [0, 0, 0, 1],
+      shape: { type: "sphere", radius: 0.5 },
+      restitutionCombine: "max",
+    });
+    world.setMaterial(2, "ice");
+    world.flush();
+    expect(wasm.batches[0]).toEqual([
+      { type: "defineMaterial", material: { name: "ice", friction: 0.02, restitution: 0.1, frictionCombine: "min", restitutionCombine: "average" } },
+      expect.objectContaining({ type: "insert", descriptor: expect.objectContaining({ id: 1, material: "ice", frictionCombine: "average", massProperties: { mass: 4, centerOfMass: [0.2, -0.3, 0] } }) }),
+      expect.objectContaining({ type: "insert", descriptor: expect.objectContaining({ id: 2, material: null, restitutionCombine: "max", massProperties: null }) }),
+      { type: "setMaterial", id: 2, name: "ice" },
+    ]);
+    expect(() => world.defineMaterial({ name: " ", friction: 0, restitution: 0 })).toThrow("cannot be empty");
+    expect(() => world.defineMaterial({ name: "mud", friction: -1, restitution: 0 })).toThrow("non-negative");
+    expect(() => world.setMaterial(1, "")).toThrow("cannot be empty");
+    expect(() =>
+      world.insert({ id: 3, bodyType: "dynamic", position: [0, 0, 0], rotation: [0, 0, 0, 1], shape: { type: "sphere", radius: 1 }, massProperties: { mass: 0, centerOfMass: [0, 0, 0] } }),
+    ).toThrow("mass must be finite and positive");
+    expect(() =>
+      world.insert({ id: 3, bodyType: "dynamic", position: [0, 0, 0], rotation: [0, 0, 0, 1], shape: { type: "sphere", radius: 1 }, massProperties: { mass: 1, centerOfMass: [0, 0, 0], principalInertia: [1, -1, 1] } }),
+    ).toThrow("non-negative");
+  });
+  it("reads stats from the step and contacts from the optional query", () => {
+    const wasm = fake();
+    const stats = { bodies: 2, dynamic: 1, kinematic: 0, fixed: 1, awake: 1, sleeping: 1, joints: 0, materials: 1, contactPairs: 1, manifolds: 1, contactPoints: 4 };
+    wasm.step_json = vi.fn(() => JSON.stringify({ bodies: [], events: [], stats }));
+    const world = new PhysicsWorld3dBridge(wasm);
+    expect(world.step(1 / 60).stats).toEqual(stats);
+    expect(world.contacts()).toEqual([]);
+    wasm.contacts_json = () => JSON.stringify([{ bodyA: 1, bodyB: 2, point: [0, 0, 0], normal: [0, 1, 0], distance: -0.001 }]);
+    expect(world.contacts()).toHaveLength(1);
   });
 });
