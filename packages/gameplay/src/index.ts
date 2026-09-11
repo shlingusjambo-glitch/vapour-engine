@@ -15,3 +15,4 @@ export * from "./crafting.js";
 export * from "./inventory.js";
 export * from "./narrative.js";
 export * from "./status-effects.js";
+export * from "./open-world.js";

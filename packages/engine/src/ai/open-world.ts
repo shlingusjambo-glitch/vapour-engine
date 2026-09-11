@@ -78,7 +78,7 @@ export class SimulationLodScheduler {
   readonly #fullDistance: number;
   readonly #reducedDistance: number;
   readonly #reducedStep: number;
-  readonly #elapsed = new Map<string, number>();
+  readonly #timing = new Map<string, { elapsed: number; untilTick: number }>();
 
   constructor(settings: SimulationTierSettings = {}) {
     this.#fullDistance = positive(settings.fullDistance ?? 45, "Full simulation distance");
@@ -91,16 +91,21 @@ export class SimulationLodScheduler {
     nonEmpty(id, "Simulation entity ID"); finitePosition(position, `Simulation entity '${id}'`); finitePosition(focus, "Simulation focus");
     nonNegative(frameDelta, "Simulation frame delta");
     const distance = Math.hypot(position.x - focus.x, position.y - focus.y, position.z - focus.z);
-    if (distance <= this.#fullDistance) { this.#elapsed.delete(id); return { tier: "full", shouldTick: true, deltaSeconds: frameDelta }; }
-    if (distance > this.#reducedDistance) { this.#elapsed.delete(id); return { tier: "dormant", shouldTick: false, deltaSeconds: 0 }; }
-    const elapsed = (this.#elapsed.get(id) ?? phase(id, this.#reducedStep)) + frameDelta;
-    if (elapsed + 1e-9 < this.#reducedStep) { this.#elapsed.set(id, elapsed); return { tier: "reduced", shouldTick: false, deltaSeconds: 0 }; }
-    this.#elapsed.set(id, elapsed % this.#reducedStep);
+    if (distance <= this.#fullDistance) { this.#timing.delete(id); return { tier: "full", shouldTick: true, deltaSeconds: frameDelta }; }
+    if (distance > this.#reducedDistance) { this.#timing.delete(id); return { tier: "dormant", shouldTick: false, deltaSeconds: 0 }; }
+    const timing = this.#timing.get(id) ?? { elapsed: 0, untilTick: this.#reducedStep - phase(id, this.#reducedStep) };
+    timing.elapsed += frameDelta;
+    timing.untilTick -= frameDelta;
+    this.#timing.set(id, timing);
+    if (timing.untilTick > 1e-9) return { tier: "reduced", shouldTick: false, deltaSeconds: 0 };
+    const elapsed = timing.elapsed;
+    timing.elapsed = 0;
+    timing.untilTick = this.#reducedStep + (timing.untilTick % this.#reducedStep);
     return { tier: "reduced", shouldTick: true, deltaSeconds: elapsed };
   }
 
-  forget(id: string): void { this.#elapsed.delete(id); }
-  clear(): void { this.#elapsed.clear(); }
+  forget(id: string): void { this.#timing.delete(id); }
+  clear(): void { this.#timing.clear(); }
 }
 
 export type TrafficSignalPhase = "green" | "yellow" | "all-red";
