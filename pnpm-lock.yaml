@@ -37,6 +37,28 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(supports-color@8.1.1)(tsx@4.23.12)
 
+  examples/coastal-city:
+    dependencies:
+      '@vapour/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@vapour/math':
+        specifier: workspace:*
+        version: link:../../packages/math
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.64
+        version: 0.1.72
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.6
+        version: 7.3.6(@types/node@24.13.3)(tsx@4.23.12)
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(supports-color@8.1.1)(tsx@4.23.12)
+
   examples/cubegame-real:
     dependencies:
       '@vapour/engine':

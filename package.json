@@ -11,13 +11,14 @@
     "build": "pnpm build:wasm && pnpm -r build",
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:sdk": "bash scripts/build-sdk-release.sh",
-    "check": "node scripts/generate-manifest.mjs --check && pnpm -r check",
+    "check": "pnpm build:types && node scripts/generate-manifest.mjs --check && pnpm -r check",
     "dev": "pnpm --filter @vapour/editor dev",
-    "test": "pnpm -r test",
+    "test": "pnpm build:types && pnpm -r test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "vapour": "pnpm --filter @vapour/cli start",
-    "manifest": "node scripts/generate-manifest.mjs"
+    "manifest": "node scripts/generate-manifest.mjs",
+    "build:types": "node scripts/build-types.mjs"
   },
   "devDependencies": {
     "prettier": "^3.6.2",
