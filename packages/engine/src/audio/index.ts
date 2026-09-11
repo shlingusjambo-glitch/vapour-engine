@@ -5,3 +5,4 @@
  */
 export * from "./audio.js";
 export * from "./mixer.js";
+export * from "./open-world-audio.js";
