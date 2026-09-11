@@ -28,10 +28,11 @@ pub use render_world::{
 pub use resource::{Arena, Handle};
 pub use shader::{ShaderAsset, ShaderError, ShaderLibrary, ShaderStage};
 pub use surface::{
-    FrameStats, MaterialTextureSet, PostProcessSettings, RENDER_LAYER_CLEAR_COLOR,
-    RENDER_LAYER_CLEAR_DEPTH, RENDER_LAYER_HAS_CAMERA, RENDER_LAYER_HAS_ENVIRONMENT,
-    RENDER_LAYER_HAS_LIGHT, RenderFrame, RenderLayers, StandardMaterialDescriptor, SurfaceRenderer,
-    SurfaceRendererError, TextureAtlasDescriptor, ToneMapping,
+    AntiAliasing, DebugView, FrameStats, MaterialTextureSet, PostProcessSettings,
+    RENDER_LAYER_CLEAR_COLOR, RENDER_LAYER_CLEAR_DEPTH, RENDER_LAYER_HAS_CAMERA,
+    RENDER_LAYER_HAS_ENVIRONMENT, RENDER_LAYER_HAS_LIGHT, RenderFrame, RenderLayers,
+    StandardMaterialDescriptor, SurfaceRenderer, SurfaceRendererError, TextureAtlasDescriptor,
+    ToneMapping,
 };
 
 pub const STANDARD_PBR_SHADER: &str = include_str!("../shaders/standard_pbr.wgsl");

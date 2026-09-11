@@ -10,6 +10,15 @@ use super::{frame::*, material::*, mesh::*, shadow::ShadowGpu};
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+pub(crate) fn fullscreen_primitive_state() -> wgpu::PrimitiveState {
+    wgpu::PrimitiveState {
+        // Fullscreen triangles cross API viewport conventions; there is no
+        // hidden back face worth culling and doing so can blank presentation.
+        cull_mode: None,
+        ..Default::default()
+    }
+}
+
 /// Vertex layout shared with `mesh::MeshVertex`; the two must stay in step,
 /// which `MeshVertex` being the only producer guarantees.
 pub(crate) fn uniform_buffer<T>(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
@@ -161,7 +170,7 @@ pub(crate) fn create_sky_pipeline(
             compilation_options: Default::default(),
             buffers: &[],
         },
-        primitive: wgpu::PrimitiveState::default(),
+        primitive: fullscreen_primitive_state(),
         depth_stencil: None,
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
@@ -243,5 +252,10 @@ mod tests {
             .map(|pass| pass.name.as_str())
             .collect();
         assert_eq!(names, ["directional-shadow", "standard-pbr", "tone-map"]);
+    }
+
+    #[test]
+    fn fullscreen_passes_never_cull_the_presentation_triangle() {
+        assert_eq!(fullscreen_primitive_state().cull_mode, None);
     }
 }

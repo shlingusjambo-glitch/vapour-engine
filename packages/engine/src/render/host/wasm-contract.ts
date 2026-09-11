@@ -38,6 +38,8 @@ export interface RustRenderer {
     contrast: number,
     vignette: number,
     chromaticAberration: number,
+    antiAliasing: number,
+    debugView: number,
   ): void;
   set_render_world_json(json: string): void;
   render(timeSeconds: number): string;
@@ -60,6 +62,7 @@ export interface RustRenderer {
     height: number,
     pixels: Uint8Array,
     srgb: boolean,
+    mipmaps: boolean,
   ): void;
   release_texture(id: string): boolean;
   define_material_json(id: string, json: string): void;

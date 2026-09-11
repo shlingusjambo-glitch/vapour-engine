@@ -1,3 +1,5 @@
+import { importGltfResources, type GltfResourceJson, type ImportedGltfImage, type ImportedGltfTexture } from "./gltf-resources.js";
+export type { ImportedGltfImage, ImportedGltfTexture, ImportedGltfSampler } from "./gltf-resources.js";
 import type { MeshUpload } from "../render/host/index.js";
 
 export interface GltfImportOptions {
@@ -17,6 +19,10 @@ export interface ImportedGltfMaterial {
   readonly baseColorTexture?: number;
   readonly normalTexture?: number;
   readonly normalScale: number;
+  readonly metallicRoughnessTexture?: number;
+  readonly occlusionTexture?: number;
+  readonly occlusionStrength: number;
+  readonly emissiveTexture?: number;
   readonly emissive: readonly [number, number, number];
   readonly alphaMode: "OPAQUE" | "MASK" | "BLEND";
   readonly alphaCutoff: number;
@@ -32,6 +38,9 @@ export interface ImportedGltfNode {
   readonly matrix?: readonly number[];
 }
 export interface ImportedGltf {
+  readonly images: readonly ImportedGltfImage[];
+  readonly textures: readonly ImportedGltfTexture[];
+  readonly warnings: readonly string[];
   readonly primitives: readonly ImportedGltfPrimitive[];
   readonly meshPrimitives: readonly (readonly number[])[];
   readonly materials: readonly ImportedGltfMaterial[];
@@ -40,7 +49,9 @@ export interface ImportedGltf {
   readonly defaultScene: number;
 }
 
-interface GltfJson {
+interface GltfJson extends GltfResourceJson {
+  extensionsRequired?: string[];
+  extensionsUsed?: string[];
   asset?: { version?: string };
   buffers?: { uri?: string; byteLength: number }[];
   bufferViews?: {
@@ -100,7 +111,10 @@ export async function importGltf(
     throw new Error(
       `${name} uses unsupported glTF version '${String(json.asset?.version)}'; Vapour requires glTF 2.0.`,
     );
+  if (json.extensionsRequired?.length) throw new Error(`${name} requires unsupported extensions: ${json.extensionsRequired.join(', ')}.`);
+  const warnings = (json.extensionsUsed ?? []).map(extension => `${name}: optional extension '${extension}' is not interpreted; core glTF fallback is used.`);
   const buffers = await loadBuffers(json, binaryChunk, options, name);
+  const { images, textures } = await importGltfResources(json, buffers, name, options.resolveUri);
   const primitives: ImportedGltfPrimitive[] = [];
   const meshPrimitives: number[][] = [];
   for (const [meshIndex, mesh] of (json.meshes ?? []).entries()) {
@@ -191,6 +205,7 @@ export async function importGltf(
         throw new Error(
           `${name} mesh ${String(meshIndex)} primitive ${String(primitiveIndex)} contains an index outside its ${String(count)} vertices.`,
         );
+      if (primitive.material !== undefined) integerIndex(primitive.material, json.materials?.length ?? 0, `${name} primitive material`);
       child.push(primitives.length);
       primitives.push(
         Object.freeze({
@@ -212,7 +227,7 @@ export async function importGltf(
     meshPrimitives.push(child);
   }
   const materials = (json.materials ?? []).map((material: any, index) =>
-    parseMaterial(material, index),
+    parseMaterial(material, index, textures.length, name),
   );
   const nodes = (json.nodes ?? []).map((node: any, index) =>
     parseNode(node, index, json.meshes?.length ?? 0),
@@ -220,12 +235,29 @@ export async function importGltf(
   for (const [index, node] of nodes.entries())
     for (const child of node.children)
       integerIndex(child, nodes.length, `${name} node ${String(index)} child`);
+  const parents = new Int32Array(nodes.length).fill(-1);
+  for (const [index, node] of nodes.entries()) for (const child of node.children) {
+    if (parents[child] !== -1) throw new Error(`${name} node ${child} has multiple parents.`);
+    parents[child] = index;
+  }
+  const visited = new Uint8Array(nodes.length);
+  const visit = (index: number): void => {
+    if (visited[index] === 1) throw new Error(`${name} node hierarchy contains a cycle at ${index}.`);
+    if (visited[index] === 2) return;
+    visited[index] = 1;
+    for (const child of nodes[index]!.children) visit(child);
+    visited[index] = 2;
+  };
+  nodes.forEach((_, index) => visit(index));
   const scenes = (
-    json.scenes ?? [{ nodes: nodes.map((_, index) => index) }]
+    json.scenes ?? [{ nodes: nodes.map((_, index) => index).filter(index => parents[index] === -1) }]
   ).map((scene, index) => {
     const roots = scene.nodes ?? [];
-    for (const node of roots)
+    for (const node of roots) {
       integerIndex(node, nodes.length, `${name} scene ${String(index)} node`);
+      if (parents[node] !== -1) throw new Error(`${name} scene ${index} root ${node} has a parent.`);
+    }
+    if (new Set(roots).size !== roots.length) throw new Error(`${name} scene ${index} has duplicate roots.`);
     return Object.freeze([...roots]);
   });
   const defaultScene = json.scene ?? 0;
@@ -234,6 +266,7 @@ export async function importGltf(
   const frozenMeshPrimitives: readonly (readonly number[])[] =
     meshPrimitives.map((value) => Object.freeze([...value]));
   return Object.freeze({
+    images, textures, warnings,
     primitives,
     meshPrimitives: frozenMeshPrimitives,
     materials,
@@ -465,7 +498,13 @@ function readComponent(
   if (type === 5122) return Math.max(-1, value / 32767);
   return value / (type === 5121 ? 255 : 65535);
 }
-function parseMaterial(value: any, index: number): ImportedGltfMaterial {
+function parseMaterial(value: any, index: number, textureCount: number, name: string): ImportedGltfMaterial {
+  for (const [slot, info] of Object.entries({ baseColor: value?.pbrMetallicRoughness?.baseColorTexture, metallicRoughness: value?.pbrMetallicRoughness?.metallicRoughnessTexture, normal: value?.normalTexture, occlusion: value?.occlusionTexture, emissive: value?.emissiveTexture }) as [string, any][]) {
+    if (info === undefined) continue;
+    integerIndex(info.index, textureCount, `${name} material ${index} ${slot} texture`);
+    if ((info.texCoord ?? 0) !== 0) throw new Error(`${name} material ${index} ${slot} requires TEXCOORD_${info.texCoord}; only UV0 is currently supported.`);
+    if (info.extensions?.KHR_texture_transform) throw new Error(`${name} material ${index} ${slot} uses KHR_texture_transform; bake UV transforms before exporting.`);
+  }
   const pbr = value?.pbrMetallicRoughness ?? {};
   const color = pbr.baseColorFactor ?? [1, 1, 1, 1];
   tuple(color, 4, `glTF material ${String(index)} baseColorFactor`);
@@ -501,6 +540,10 @@ function parseMaterial(value: any, index: number): ImportedGltfMaterial {
     ...(value?.normalTexture?.index === undefined
       ? {}
       : { normalTexture: value.normalTexture.index }),
+    ...(pbr.metallicRoughnessTexture?.index === undefined ? {} : { metallicRoughnessTexture: pbr.metallicRoughnessTexture.index }),
+    ...(value?.occlusionTexture?.index === undefined ? {} : { occlusionTexture: value.occlusionTexture.index }),
+    ...(value?.emissiveTexture?.index === undefined ? {} : { emissiveTexture: value.emissiveTexture.index }),
+    occlusionStrength: finiteDefault(value?.occlusionTexture?.strength, 1, "occlusionTexture.strength"),
     normalScale: finiteDefault(
       value?.normalTexture?.scale,
       1,

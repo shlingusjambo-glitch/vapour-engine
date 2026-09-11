@@ -12,6 +12,21 @@ pub enum ToneMapping {
     Aces,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AntiAliasing {
+    None,
+    #[default]
+    Fxaa,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugView {
+    #[default]
+    Final,
+    Luminance,
+    FalseColor,
+}
+
 impl ToneMapping {
     const fn shader_id(self) -> u32 {
         match self {
@@ -33,6 +48,8 @@ pub struct PostProcessSettings {
     pub contrast: f32,
     pub vignette: f32,
     pub chromatic_aberration: f32,
+    pub anti_aliasing: AntiAliasing,
+    pub debug_view: DebugView,
 }
 
 impl Default for PostProcessSettings {
@@ -47,6 +64,8 @@ impl Default for PostProcessSettings {
             contrast: 1.0,
             vignette: 0.0,
             chromatic_aberration: 0.0,
+            anti_aliasing: AntiAliasing::Fxaa,
+            debug_view: DebugView::Final,
         }
     }
 }
@@ -181,7 +200,7 @@ impl PostProcessGpu {
                 compilation_options: Default::default(),
                 buffers: &[],
             },
-            primitive: wgpu::PrimitiveState::default(),
+            primitive: super::pipeline::fullscreen_primitive_state(),
             depth_stencil: None,
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
@@ -255,7 +274,16 @@ impl PostProcessGpu {
                     settings.contrast,
                     settings.vignette,
                 ],
-                lens: [settings.chromatic_aberration, 0.0, 0.0, 0.0],
+                lens: [
+                    settings.chromatic_aberration,
+                    matches!(settings.anti_aliasing, AntiAliasing::Fxaa) as u32 as f32,
+                    match settings.debug_view {
+                        DebugView::Final => 0.0,
+                        DebugView::Luminance => 1.0,
+                        DebugView::FalseColor => 2.0,
+                    },
+                    0.0,
+                ],
             }),
         );
     }

@@ -8,3 +8,4 @@ export * from "./gltf-import.js";
 export * from "./loading-progress.js";
 export * from "./mesh-library.js";
 export * from "./project-templates.js";
+export * from './gltf-runtime.js';

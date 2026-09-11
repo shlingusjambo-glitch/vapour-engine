@@ -14,6 +14,7 @@ mod mesh;
 mod pipeline;
 mod postprocess;
 mod shadow;
+mod texture_mips;
 mod view;
 
 pub use error::*;
@@ -22,8 +23,8 @@ pub use lighting::*;
 pub use material::*;
 pub(crate) use mesh::*;
 pub(crate) use pipeline::*;
+pub use postprocess::{AntiAliasing, DebugView, PostProcessSettings, ToneMapping};
 pub(crate) use postprocess::{HDR_FORMAT, HdrTarget, PostProcessGpu};
-pub use postprocess::{PostProcessSettings, ToneMapping};
 pub(crate) use shadow::*;
 pub(crate) use view::*;
 
@@ -112,7 +113,8 @@ impl<'surface> SurfaceRenderer<'surface> {
                 });
         let pipelines =
             create_standard_pipelines(&context.device, &pipeline_layout, &shader, HDR_FORMAT);
-        let shadow_pipeline = create_shadow_pipeline(&context.device, &shadows.layout);
+        let shadow_pipeline =
+            create_shadow_pipeline(&context.device, &shadows.layout, &material_layout);
         let sky_pipeline = create_sky_pipeline(&context.device, &frame_layout, &sky_shader);
 
         let frame_uniforms = vec![create_frame_gpu(
@@ -122,13 +124,10 @@ impl<'surface> SurfaceRenderer<'surface> {
             0,
         )];
 
-        let default_textures = vec![
-            solid_texture(&context, "base color", [255, 255, 255, 255], true),
-            solid_texture(&context, "normal", [128, 128, 255, 255], false),
-            solid_texture(&context, "metallic roughness", [255, 255, 0, 255], false),
-            solid_texture(&context, "occlusion", [255, 255, 255, 255], false),
-            solid_texture(&context, "emission", [0, 0, 0, 255], true),
-        ];
+        let default_textures = DEFAULT_MATERIAL_TEXTURES
+            .iter()
+            .map(|(label, color, srgb)| solid_texture(&context, label, *color, *srgb))
+            .collect::<Vec<_>>();
         let textures = HashMap::new();
         let default_definition =
             normalize_material("builtin:default", &StandardMaterialDescriptor::default())?;
@@ -275,6 +274,20 @@ impl<'surface> SurfaceRenderer<'surface> {
         pixels: &[u8],
         srgb: bool,
     ) -> Result<(), SurfaceRendererError> {
+        self.upload_texture_rgba8_with_mipmaps(id, width, height, pixels, srgb, false)
+    }
+
+    /// Optionally builds a complete mip chain once at upload time. Keep this
+    /// disabled for grid atlases, whose cells need separately authored mipmaps.
+    pub fn upload_texture_rgba8_with_mipmaps(
+        &mut self,
+        id: &str,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+        srgb: bool,
+        mipmaps: bool,
+    ) -> Result<(), SurfaceRendererError> {
         validate_asset_id("texture", id)?;
         if width == 0 || height == 0 {
             return Err(SurfaceRendererError::InvalidTextureId {
@@ -282,7 +295,20 @@ impl<'surface> SurfaceRenderer<'surface> {
                 reason: "dimensions must be positive",
             });
         }
-        let expected = width as usize * height as usize * 4;
+        let max_dimension = self.context.device.limits().max_texture_dimension_2d;
+        if width > max_dimension || height > max_dimension {
+            return Err(SurfaceRendererError::InvalidTextureId {
+                id: id.to_owned(),
+                reason: "dimensions exceed the device maxTextureDimension2D limit",
+            });
+        }
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|area| area.checked_mul(4))
+            .ok_or_else(|| SurfaceRendererError::InvalidTextureId {
+                id: id.to_owned(),
+                reason: "RGBA8 dimensions exceed the addressable upload size",
+            })?;
         if pixels.len() != expected {
             return Err(SurfaceRendererError::TextureDataLength {
                 id: id.to_owned(),
@@ -290,7 +316,7 @@ impl<'surface> SurfaceRenderer<'surface> {
                 actual: pixels.len(),
             });
         }
-        let texture = texture_rgba8(&self.context, id, width, height, pixels, srgb);
+        let texture = texture_rgba8(&self.context, id, width, height, pixels, srgb, mipmaps);
         self.textures.insert(id.to_owned(), texture);
 
         let definitions: Vec<(usize, String, MaterialDefinition)> = self
@@ -934,6 +960,10 @@ impl<'surface> SurfaceRenderer<'surface> {
                                     continue;
                                 };
                                 shadow_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                                let Some(material) = self.materials.get(batch.material) else {
+                                    continue;
+                                };
+                                shadow_pass.set_bind_group(1, &material.bind_group, &[]);
                                 shadow_pass.set_index_buffer(
                                     mesh.index_buffer.slice(..),
                                     wgpu::IndexFormat::Uint32,

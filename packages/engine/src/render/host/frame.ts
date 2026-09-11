@@ -18,6 +18,10 @@ export interface PostProcessSettings {
   readonly contrast?: number;
   readonly vignette?: number;
   readonly chromaticAberration?: number;
+  /** Edge-aware post-process AA. FXAA is the stable default until motion-vector TAA is available. */
+  readonly antiAliasing?: "none" | "fxaa";
+  /** Final presentation or an HDR inspection view useful while lighting scenes. */
+  readonly debugView?: "final" | "luminance" | "false-color";
 }
 
 export interface RenderStats {

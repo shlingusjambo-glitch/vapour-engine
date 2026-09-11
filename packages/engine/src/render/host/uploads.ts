@@ -43,6 +43,8 @@ export interface TextureUpload {
   readonly pixels: Uint8Array;
   /** Base-color/emission images are normally sRGB; data maps are linear. */
   readonly colorSpace?: "srgb" | "linear";
+  /** Generate filtered levels at upload. Keep false for grid atlases. */
+  readonly mipmaps?: boolean;
 }
 
 export interface MaterialTextureSet {
@@ -74,6 +76,7 @@ export interface MaterialUpload {
   readonly occlusionStrength?: number;
   readonly textures?: MaterialTextureSet;
   readonly filter?: "nearest" | "linear";
+  readonly anisotropy?: 1 | 2 | 4 | 8 | 16;
   readonly addressMode?: "repeat" | "clamp" | "mirror";
   /** When present, local UVs repeat inside the cell selected by each vertex's
    * `textureLayers` value instead of addressing the full texture. */
@@ -118,6 +121,8 @@ export function validateMaterialUpload(
 ): void {
   if (id.trim() === "" || id.startsWith("builtin:"))
     throw new Error("A material needs a non-empty, non-reserved identifier.");
+  if (![1, 2, 4, 8, 16].includes(material.anisotropy ?? 1) || ((material.anisotropy ?? 1) > 1 && material.filter === "nearest"))
+    throw new Error(`Material '${id}' anisotropy must be 1, 2, 4, 8 or 16 and requires linear filtering.`);
   const numbers = [
     ...(material.baseColor ?? [1, 1, 1, 1]),
     ...(material.emission ?? [1, 1, 1]),

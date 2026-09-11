@@ -259,6 +259,7 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
         texture.height,
         texture.pixels,
         texture.colorSpace !== "linear",
+        texture.mipmaps ?? false,
       );
     } catch (error) {
       throw new Error(
@@ -375,6 +376,10 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
         this.#postProcess.contrast ?? 1,
         this.#postProcess.vignette ?? 0,
         this.#postProcess.chromaticAberration ?? 0,
+        this.#postProcess.antiAliasing === "none" ? 0 : 1,
+        { final: 0, luminance: 1, "false-color": 2 }[
+          this.#postProcess.debugView ?? "final"
+        ],
       );
     } catch (error) {
       throw new Error(
@@ -582,6 +587,10 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
 }
 
 function validatePostEffects(settings: PostProcessSettings): void {
+  if (!["none", "fxaa"].includes(settings.antiAliasing ?? "fxaa"))
+    throw new Error(`Unknown anti-aliasing mode '${String(settings.antiAliasing)}'.`);
+  if (!["final", "luminance", "false-color"].includes(settings.debugView ?? "final"))
+    throw new Error(`Unknown renderer debug view '${String(settings.debugView)}'.`);
   for (const [name, value, maximum] of [
     ["Bloom intensity", settings.bloom?.intensity ?? 0, 10],
     ["Bloom threshold", settings.bloom?.threshold ?? 1, 64],

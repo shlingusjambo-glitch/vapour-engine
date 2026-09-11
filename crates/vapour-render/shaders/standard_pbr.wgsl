@@ -176,6 +176,26 @@ fn fresnel_schlick(cosine: f32, reflectance: vec3<f32>) -> vec3<f32> {
     return reflectance + (vec3<f32>(1.0) - reflectance) * pow(clamp(1.0 - cosine, 0.0, 1.0), 5.0);
 }
 
+fn fresnel_schlick_roughness(cosine: f32, reflectance: vec3<f32>, roughness: f32) -> vec3<f32> {
+    return reflectance + (max(vec3<f32>(1.0 - roughness), reflectance) - reflectance)
+        * pow(clamp(1.0 - cosine, 0.0, 1.0), 5.0);
+}
+
+// Low-frequency environment lighting from the authored procedural sky. This
+// is deliberately probe-like rather than screen-space: it remains stable off
+// screen, costs no extra texture memory, and gives metals/rough surfaces a
+// believable response until per-district reflection probes are introduced.
+fn environment_radiance(direction: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let up = clamp(direction.y, -1.0, 1.0);
+    var color = mix(frame.sky_horizon_curve.rgb, frame.sky_zenith_mode.rgb,
+        pow(max(up, 0.0), mix(0.35, 1.5, roughness)));
+    if up < 0.0 {
+        color = mix(frame.sky_horizon_curve.rgb, frame.sky_ground_sun_size.rgb,
+            pow(-up, mix(0.5, 1.75, roughness)));
+    }
+    return color;
+}
+
 fn directional_shadow_visibility(world_position: vec3<f32>, normal: vec3<f32>, to_light: vec3<f32>) -> f32 {
     if frame.shadow_params.x < 0.5 { return 1.0; }
     let view_depth = dot(world_position - frame.camera_position, frame.camera_forward.xyz);
@@ -235,7 +255,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // needs one number rather than a second colour to keep in sync.
     let emission = textureSample(emission_texture, material_sampler, sampled_uv).rgb
         * material.emission
-        * sampled_base.rgb
+        * input.instance_base_color.rgb
         * instance_emissive;
 
     let view = normalize(frame.camera_position - input.world_position);
@@ -313,7 +333,11 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         direct = direct + (diffuse + specular) * radiance * attenuation * n_dot_l;
     }
 
-    let ambient = sampled_base.rgb * indirect * occlusion;
+    let n_dot_v = max(dot(normal, view), 0.0);
+    let environment_fresnel = fresnel_schlick_roughness(n_dot_v, reflectance, roughness);
+    let environment_specular = environment_radiance(reflect(-view, normal), roughness)
+        * environment_fresnel * mix(0.35, 1.0, 1.0 - roughness) * occlusion;
+    let ambient = sampled_base.rgb * indirect * occlusion + environment_specular;
     // Preserve scene-referred linear light in the RGBA16F target. Exposure and
     // tone mapping happen once in the presentation pass after all scene layers.
     var output_color = ambient + direct + emission;

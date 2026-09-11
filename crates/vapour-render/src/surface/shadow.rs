@@ -109,7 +109,8 @@ impl ShadowGpu {
 
 pub(crate) fn create_shadow_pipeline(
     device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
+    shadow_layout: &wgpu::BindGroupLayout,
+    material_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Vapour shadow depth shader"),
@@ -117,7 +118,7 @@ pub(crate) fn create_shadow_pipeline(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Vapour shadow pipeline layout"),
-        bind_group_layouts: &[Some(layout)],
+        bind_group_layouts: &[Some(shadow_layout), Some(material_layout)],
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -150,7 +151,14 @@ pub(crate) fn create_shadow_pipeline(
             },
         }),
         multisample: Default::default(),
-        fragment: None,
+        // The fragment stage samples base-colour alpha so foliage, fences and
+        // other MASK materials cast silhouettes instead of solid quads.
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment_main"),
+            compilation_options: Default::default(),
+            targets: &[],
+        }),
         multiview_mask: None,
         cache: None,
     })

@@ -6,15 +6,17 @@ use uuid::Uuid;
 use vapour_core::{
     CharacterControllerDescriptor2d, CharacterControllerDescriptor3d, ColliderShape2d,
     ColliderShape3d, Entity, JointSpec3d, PhysicsBodyDescriptor2d, PhysicsBodyDescriptor3d,
-    PhysicsEvent2d, PhysicsEvent3d, PhysicsWorld2d, PhysicsWorld3d, RaycastHit2d, RaycastHit3d,
-    ShapeCastHit2d, ShapeCastHit3d, Time, Transform, TransformHierarchy, World,
+    PhysicsEvent2d, PhysicsEvent3d, PhysicsMaterial, PhysicsStats3d, PhysicsWorld2d,
+    PhysicsWorld3d, RaycastHit2d, RaycastHit3d, ShapeCastHit2d, ShapeCastHit3d, Time, Transform,
+    TransformHierarchy, World,
 };
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
 use vapour_render::{
-    GpuContext, GpuRequest, PostProcessSettings, RenderFrame, RenderLayers, RenderWorld,
-    StandardMaterialDescriptor, SurfaceRenderer, ToneMapping, build_mesh_with_attributes,
+    AntiAliasing, DebugView, GpuContext, GpuRequest, PostProcessSettings, RenderFrame,
+    RenderLayers, RenderWorld, StandardMaterialDescriptor, SurfaceRenderer, ToneMapping,
+    build_mesh_with_attributes,
 };
 #[cfg(target_arch = "wasm32")]
 use web_sys::HtmlCanvasElement;
@@ -117,6 +119,13 @@ enum PhysicsCommand2d {
     SetGravity {
         gravity: [f32; 2],
     },
+    DefineMaterial {
+        material: PhysicsMaterial,
+    },
+    SetMaterial {
+        id: u64,
+        name: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -175,6 +184,10 @@ impl PhysicsEngine2d {
                     rotation,
                 } => self.world.set_kinematic_target(id, position, rotation),
                 PhysicsCommand2d::SetGravity { gravity } => self.world.set_gravity(gravity),
+                PhysicsCommand2d::DefineMaterial { material } => {
+                    self.world.define_material(material)
+                }
+                PhysicsCommand2d::SetMaterial { id, name } => self.world.set_material(id, &name),
             };
             result.map_err(|error| {
                 JsError::new(&format!("2D physics command was rejected: {error}"))
@@ -386,6 +399,13 @@ enum PhysicsCommand3d {
     SetGravity {
         gravity: [f32; 3],
     },
+    DefineMaterial {
+        material: PhysicsMaterial,
+    },
+    SetMaterial {
+        id: u64,
+        name: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -393,6 +413,7 @@ enum PhysicsCommand3d {
 struct PhysicsStep3d {
     bodies: Vec<vapour_core::PhysicsBodySnapshot3d>,
     events: Vec<PhysicsEvent3d>,
+    stats: PhysicsStats3d,
 }
 
 /// Browser-facing Rust physics world. Commands and results cross once per
@@ -452,6 +473,10 @@ impl PhysicsEngine3d {
                     max_force,
                 } => self.world.set_joint_motor(id, target_velocity, max_force),
                 PhysicsCommand3d::SetGravity { gravity } => self.world.set_gravity(gravity),
+                PhysicsCommand3d::DefineMaterial { material } => {
+                    self.world.define_material(material)
+                }
+                PhysicsCommand3d::SetMaterial { id, name } => self.world.set_material(id, &name),
             };
             result.map_err(|error| {
                 JsError::new(&format!("3D physics command was rejected: {error}"))
@@ -468,10 +493,22 @@ impl PhysicsEngine3d {
         serde_json::to_string(&PhysicsStep3d {
             bodies: self.world.snapshots(),
             events,
+            stats: self.world.stats(),
         })
         .map_err(|error| JsError::new(&format!("failed to serialize 3D physics step: {error}")))
     }
 
+    /// Solver contacts from the last step, for debug rendering. Kept out of
+    /// `step_json` because a settled pile of crates has thousands of them.
+    pub fn contacts_json(&self) -> Result<String, JsError> {
+        serde_json::to_string(&self.world.contacts()).map_err(|error| {
+            JsError::new(&format!("failed to serialize 3D physics contacts: {error}"))
+        })
+    }
+
+    /// `exclude_body` is a body id or `0` for none; passed as a float because
+    /// wasm-bindgen would otherwise force `BigInt` on every caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn raycast_json(
         &self,
         origin: &[f32],
@@ -480,7 +517,13 @@ impl PhysicsEngine3d {
         layer: u32,
         mask: u32,
         include_sensors: bool,
+        exclude_body: f64,
     ) -> Result<String, JsError> {
+        let exclude = if exclude_body > 0.0 && exclude_body.fract() == 0.0 {
+            Some(exclude_body as u64)
+        } else {
+            None
+        };
         let origin: [f32; 3] = origin
             .try_into()
             .map_err(|_| JsError::new("3D physics ray origin requires exactly 3 floats"))?;
@@ -496,6 +539,7 @@ impl PhysicsEngine3d {
                 layer,
                 mask,
                 include_sensors,
+                exclude,
             )
             .map_err(|error| JsError::new(&error.to_string()))?;
         serde_json::to_string(&hit).map_err(|error| {
@@ -742,6 +786,8 @@ impl WebGpuRenderer {
         contrast: f32,
         vignette: f32,
         chromatic_aberration: f32,
+        anti_aliasing: u32,
+        debug_view: u32,
     ) -> Result<(), JsError> {
         let tone_mapping = match tone_mapping {
             0 => ToneMapping::None,
@@ -750,6 +796,25 @@ impl WebGpuRenderer {
             value => {
                 return Err(JsError::new(&format!(
                     "tone mapping mode must be 0 (none), 1 (Reinhard), or 2 (ACES), received {value}"
+                )));
+            }
+        };
+        let anti_aliasing = match anti_aliasing {
+            0 => AntiAliasing::None,
+            1 => AntiAliasing::Fxaa,
+            value => {
+                return Err(JsError::new(&format!(
+                    "anti-aliasing mode must be 0 (none) or 1 (FXAA), received {value}"
+                )));
+            }
+        };
+        let debug_view = match debug_view {
+            0 => DebugView::Final,
+            1 => DebugView::Luminance,
+            2 => DebugView::FalseColor,
+            value => {
+                return Err(JsError::new(&format!(
+                    "debug view must be 0 (final), 1 (luminance), or 2 (false color), received {value}"
                 )));
             }
         };
@@ -764,6 +829,8 @@ impl WebGpuRenderer {
                 contrast,
                 vignette,
                 chromatic_aberration,
+                anti_aliasing,
+                debug_view,
             })
             .map_err(|error| JsError::new(&error.to_string()))
     }
@@ -936,9 +1003,10 @@ impl WebGpuRenderer {
         height: u32,
         pixels: &[u8],
         srgb: bool,
+        mipmaps: bool,
     ) -> Result<(), JsError> {
         self.inner
-            .upload_texture_rgba8(id, width, height, pixels, srgb)
+            .upload_texture_rgba8_with_mipmaps(id, width, height, pixels, srgb, mipmaps)
             .map_err(|error| JsError::new(&error.to_string()))
     }
 

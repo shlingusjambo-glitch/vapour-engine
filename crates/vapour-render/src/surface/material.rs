@@ -48,6 +48,7 @@ pub struct StandardMaterialDescriptor {
     pub occlusion_strength: Option<f32>,
     pub textures: Option<MaterialTextureSet>,
     pub filter: Option<String>,
+    pub anisotropy: Option<u16>,
     pub address_mode: Option<String>,
     pub atlas: Option<TextureAtlasDescriptor>,
     pub coverage_mode: Option<String>,
@@ -111,6 +112,7 @@ pub(crate) struct MaterialDefinition {
     pub(crate) uniforms: MaterialUniforms,
     pub(crate) textures: [Option<String>; 5],
     pub(crate) filter: wgpu::FilterMode,
+    pub(crate) anisotropy: u16,
     pub(crate) address_mode: wgpu::AddressMode,
     pub(crate) pipeline: PipelineKind,
 }
@@ -178,6 +180,17 @@ pub(crate) struct MaterialUniforms {
     pub(crate) roughness_normal_occlusion_cutoff: [f32; 4],
     pub(crate) atlas_grid_inset_origin: [f32; 4],
 }
+
+// Texture samples multiply material/instance factors. Their fallback must be
+// the multiplicative identity; black MR/emission maps would silently disable
+// authored metallic surfaces and emissive lamps without texture assets.
+pub(crate) const DEFAULT_MATERIAL_TEXTURES: [(&str, [u8; 4], bool); 5] = [
+    ("base color", [255, 255, 255, 255], true),
+    ("normal", [128, 128, 255, 255], false),
+    ("metallic roughness", [255, 255, 255, 255], false),
+    ("occlusion", [255, 255, 255, 255], false),
+    ("emission", [255, 255, 255, 255], true),
+];
 
 pub(crate) fn create_material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     // The vertex stage reads uv_scale/uv_offset from the material uniform, so the
@@ -264,6 +277,15 @@ pub(crate) fn normalize_material(
             });
         }
     };
+    let anisotropy = descriptor.anisotropy.unwrap_or(1);
+    if ![1, 2, 4, 8, 16].contains(&anisotropy)
+        || (anisotropy > 1 && filter != wgpu::FilterMode::Linear)
+    {
+        return Err(SurfaceRendererError::InvalidMaterialId {
+            id: id.to_owned(),
+            reason: "anisotropy must be 1, 2, 4, 8 or 16 and requires linear filtering",
+        });
+    }
     let address_mode = match descriptor.address_mode.as_deref().unwrap_or("repeat") {
         "repeat" => wgpu::AddressMode::Repeat,
         "clamp" => wgpu::AddressMode::ClampToEdge,
@@ -353,6 +375,7 @@ pub(crate) fn normalize_material(
             texture_set.emission,
         ],
         filter,
+        anisotropy,
         address_mode,
         pipeline,
     })
@@ -395,6 +418,7 @@ pub(crate) fn create_material_gpu(
         address_mode_v: definition.address_mode,
         min_filter: definition.filter,
         mag_filter: definition.filter,
+        anisotropy_clamp: definition.anisotropy,
         mipmap_filter: match definition.filter {
             wgpu::FilterMode::Linear => wgpu::MipmapFilterMode::Linear,
             wgpu::FilterMode::Nearest => wgpu::MipmapFilterMode::Nearest,
@@ -436,7 +460,13 @@ pub(crate) fn texture_rgba8(
     height: u32,
     pixels: &[u8],
     srgb: bool,
+    mipmaps: bool,
 ) -> TextureGpu {
+    let (mip_level_count, data) = if mipmaps {
+        super::texture_mips::mip_chain(width, height, pixels, srgb)
+    } else {
+        (1, pixels.to_vec())
+    };
     let texture = context.device.create_texture_with_data(
         &context.queue,
         &wgpu::TextureDescriptor {
@@ -446,7 +476,7 @@ pub(crate) fn texture_rgba8(
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: if srgb {
@@ -458,7 +488,7 @@ pub(crate) fn texture_rgba8(
             view_formats: &[],
         },
         wgpu::wgt::TextureDataOrder::LayerMajor,
-        pixels,
+        &data,
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     TextureGpu {
@@ -473,5 +503,51 @@ pub(crate) fn solid_texture(
     color: [u8; 4],
     srgb: bool,
 ) -> TextureGpu {
-    texture_rgba8(context, label, 1, 1, &color, srgb)
+    texture_rgba8(context, label, 1, 1, &color, srgb, false)
+}
+
+#[cfg(test)]
+mod mip_material_tests {
+    use super::*;
+    #[test]
+    fn fallback_maps_preserve_metallic_and_emissive_factors() {
+        assert_eq!(DEFAULT_MATERIAL_TEXTURES[2].1, [255; 4]);
+        assert_eq!(DEFAULT_MATERIAL_TEXTURES[4].1, [255; 4]);
+    }
+    #[test]
+    fn anisotropy_requires_supported_factor_and_linear_filtering() {
+        for invalid in [0, 3, 32] {
+            assert!(
+                normalize_material(
+                    "test",
+                    &StandardMaterialDescriptor {
+                        anisotropy: Some(invalid),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            normalize_material(
+                "test",
+                &StandardMaterialDescriptor {
+                    anisotropy: Some(8),
+                    filter: Some("nearest".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            normalize_material(
+                "test",
+                &StandardMaterialDescriptor {
+                    anisotropy: Some(8),
+                    ..Default::default()
+                }
+            )
+            .is_ok()
+        );
+    }
 }

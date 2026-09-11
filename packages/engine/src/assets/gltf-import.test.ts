@@ -81,6 +81,8 @@ function tangentedTriangle(): string {
     meshes: [
       { primitives: [{ attributes: { POSITION: 0, TANGENT: 1 }, indices: 2 }] },
     ],
+    images: [{ uri: "data:image/png;base64,iVBORw==" }],
+    textures: [{ source: 0 }],
     materials: [{ normalTexture: { index: 0, scale: 0.4 } }],
   });
 }
