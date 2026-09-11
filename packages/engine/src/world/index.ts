@@ -5,5 +5,6 @@
  */
 export * from "./terrain.js";
 export * from "./world-streaming.js";
+export * from "./persistent-streaming.js";
 export * from "./large-world.js";
 export * from "./procedural-noise.js";
