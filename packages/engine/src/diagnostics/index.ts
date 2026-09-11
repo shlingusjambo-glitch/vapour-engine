@@ -13,3 +13,4 @@ export * from "./counters.js";
 export * from "./logging.js";
 export * from "./debug-draw.js";
 export * from "./overlay.js";
+export * from "./open-world-debug.js";

@@ -9,3 +9,4 @@ export * from "./navmesh.js";
 export * from "./nav-agent.js";
 export * from "./perception.js";
 export * from "./nav-debug.js";
+export * from "./open-world.js";
