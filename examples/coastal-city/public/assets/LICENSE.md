@@ -8,4 +8,4 @@ Blender is an authoring/export tool. Its program is not embedded in the game. Th
 
 Public Rockstar imagery was consulted for high-level lighting, density and scale observations only; no Rockstar assets or recognizable designs are included. The terms “Port Solace”, “Mariner's Reach”, “The Breakwater”, “Solace Provisions” and “Meridian” are fictional project names, not claims of third-party endorsement.
 
-No professional sound recordings are included in this kit. A sound category must remain explicitly unimplemented until a suitable legal recording and its license are recorded here; synthetic sounds must not be substituted as finished audio.
+Two CC0 field-recorded ambience tracks are included under `audio/`; see [audio provenance](audio/LICENSE.md) for their authors, sources, encoding and validation. All other sound categories remain unimplemented until suitable legal recordings are documented; synthetic sounds must not be substituted as finished audio.

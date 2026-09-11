@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "retrievedAt": "2026-09-05",
+  "license": "CC0-1.0",
+  "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "assets": [
+    {
+      "id": "ocean",
+      "file": "ocean-waves.mp3",
+      "title": "Calm ocean waves",
+      "author": "SamsterBirdies",
+      "sourceUrl": "https://freesound.org/people/SamsterBirdies/sounds/578524/",
+      "downloadUrl": "https://cdn.freesound.org/previews/578/578524_5487341-hq.mp3",
+      "description": "Loopable field recording of calm waves at Whidbey Island, Washington, recorded with Zoom H1n internal microphones.",
+      "encoding": "Freesound public high-quality MP3, stereo 48 kHz, approximately 183 kbps variable bitrate; not the original lossless FLAC",
+      "durationSeconds": 179.71014583333334,
+      "sampleRate": 48000,
+      "channels": 2,
+      "bytes": 4107072,
+      "sha256": "fd505dbd43cb1c3508f884279bf5d3e060bb14f2bc3d9b4cce334eb7a75b5d7f",
+      "decodedPeak": 0.92681884765625,
+      "decodedRms": 0.058080655037261626,
+      "decodedClippedSamples": 0
+    },
+    {
+      "id": "city",
+      "file": "city-night.mp3",
+      "title": "Seamless City Loop",
+      "author": "qubodup",
+      "sourceUrl": "https://freesound.org/people/qubodup/sounds/223093/",
+      "downloadUrl": "https://cdn.freesound.org/previews/223/223093_71257-hq.mp3",
+      "description": "Looping distant city ambience mixed by qubodup from the CC0 field recording 'White noise city captured from window at 1st floor' by jmbphilmes.",
+      "encoding": "Freesound public high-quality MP3, stereo 48 kHz, approximately 183 kbps variable bitrate; not the original lossless FLAC",
+      "durationSeconds": 30,
+      "sampleRate": 48000,
+      "channels": 2,
+      "bytes": 687648,
+      "sha256": "f2ac02efee5250abf15b5bbff7ad7aae7a56c29d8b966f07281995b92c34a371",
+      "decodedPeak": 0.96600341796875,
+      "decodedRms": 0.14422441208955042,
+      "decodedClippedSamples": 0
+    }
+  ]
+}
