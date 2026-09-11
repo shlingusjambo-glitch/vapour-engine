@@ -337,7 +337,6 @@ export class RaycastVehicle3d {
       const attach = add(chassis.position, rotate(q, wheel.attach));
       const reach = wheel.suspension.restLength + wheel.radius;
       const hit = this.#world.raycast(attach, down, reach, this.#filter);
-      const previous = wheel.compression;
       if (hit === undefined) {
         wheel.grounded = false; wheel.compression = 0; wheel.suspensionForce = 0; wheel.slipRatio = 0; wheel.slipAngle = 0;
         wheel.position = add(attach, scale(down, wheel.suspension.restLength));
@@ -350,11 +349,16 @@ export class RaycastVehicle3d {
       wheel.compression = clamp(wheel.suspension.restLength - (hit.distance - wheel.radius), 0, wheel.suspension.maxTravel);
       wheel.position = add(attach, scale(down, wheel.suspension.restLength - wheel.compression));
 
-      // Spring on compression, damper on its rate; only ever pushes up.
-      const rate = (wheel.compression - previous) / dt;
-      const load = Math.max(0, wheel.suspension.stiffness * wheel.compression + wheel.suspension.damping * rate);
-      wheel.suspensionForce = load;
       const normal = wheel.contactNormal;
+      const arm = subtract(wheel.contactPoint, chassis.position);
+      const contactVelocity = add(chassis.linearVelocity, cross(chassis.angularVelocity, arm));
+      // Damping follows the chassis velocity along the suspension contact
+      // normal. A finite difference of ray compression injects an enormous
+      // impulse on the first contact frame (0 -> full travel), launching the
+      // chassis before its tyres can produce drive force.
+      const compressionSpeed = -dot(contactVelocity, normal);
+      const load = Math.max(0, wheel.suspension.stiffness * wheel.compression + wheel.suspension.damping * compressionSpeed);
+      wheel.suspensionForce = load;
       this.#world.addForceAtPoint(this.#chassis, scale(normal, load), wheel.contactPoint);
 
       // Tyre frame on the contact plane.
@@ -366,8 +370,6 @@ export class RaycastVehicle3d {
       const fallbackForward = cross(normal, rotate(q, cross(this.#up, this.#forward)));
       const longAxis = unitOr(projectedForward, fallbackForward, 'tyre forward');
       const latAxis = unitOr(cross(longAxis, normal), rotate(q, cross(this.#forward, this.#up)), 'tyre side');
-      const arm = subtract(wheel.contactPoint, chassis.position);
-      const contactVelocity = add(chassis.linearVelocity, cross(chassis.angularVelocity, arm));
       const vLong = dot(contactVelocity, longAxis), vLat = dot(contactVelocity, latAxis);
       const floor = Math.max(Math.abs(vLong), 1);
       wheel.slipRatio = (wheel.omega * wheel.radius - vLong) / floor;
