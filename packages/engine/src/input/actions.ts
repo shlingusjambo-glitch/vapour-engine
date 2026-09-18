@@ -17,8 +17,8 @@
  * - **Player slots** route devices to players, so local multiplayer is a
  *   routing question rather than a parallel input stack.
  */
-import type { InputActionDefinition, InputBinding, InputDevice } from "./input.js";
-import { InputSystem } from "./input.js";
+import type { InputActionDefinition, InputBinding, InputDevice, XrInputDeviceState } from "./input.js";
+import { InputSystem, XR_GRIP_SPACE } from "./input.js";
 
 /** A named direction pair resolved into a 2D vector. */
 export interface CompositeVector2 {
@@ -168,9 +168,15 @@ export class InputActions {
     return this.#contexts.length;
   }
 
-  /** Resolves every action for this frame. Call once, early. */
-  update(): void {
-    this.system.update();
+  /**
+   * Resolves every action for this frame. Call once, early.
+   *
+   * Pass `navigator.getGamepads()` and the current `XrFrameSnapshot.inputs` to
+   * resolve gamepad and XR bindings; keyboard, pointer, and virtual bindings
+   * need neither.
+   */
+  update(gamepads: readonly (Gamepad | null)[] = [], xrInputs: readonly XrInputDeviceState[] = []): void {
+    this.system.update(gamepads, xrInputs);
     this.#trackDevice();
   }
 
@@ -297,16 +303,12 @@ export class InputActions {
     return this.isMapEnabled(owner);
   }
 
-  /** Notes which device last moved, so UI can show matching prompts. */
+  /** Notes which device last moved, so UI can show matching prompts. The
+   * resolver tracks this per contributing binding, so an action bound to both
+   * a key and an XR trigger reports whichever the player actually used. */
   #trackDevice(): void {
-    for (const [name, owner] of this.#actionOwner) {
-      if (!this.isMapEnabled(owner)) continue;
-      const state = this.system.action(name);
-      if (state.value === 0 && !state.pressed) continue;
-      const bindings = this.system.bindings(name);
-      const device = bindings[0]?.device;
-      if (device) this.#lastDevice = device;
-    }
+    const device = this.system.lastDevice;
+    if (device !== undefined) this.#lastDevice = device;
   }
 }
 
@@ -316,6 +318,9 @@ export interface PlayerSlotOptions {
   readonly gamepad?: number;
   /** Whether this player uses the keyboard and pointer. */
   readonly keyboard?: boolean;
+  /** Whether this player owns the XR controllers and hands. One headset, one
+   * player: XR bindings are dropped for every other slot. */
+  readonly xr?: boolean;
 }
 
 /**
@@ -344,7 +349,9 @@ export class PlayerInput {
       actions: map.actions.map((action) => ({
         ...action,
         bindings: action.bindings
-          .filter((binding) => (binding.device === "gamepad" ? slot.gamepad !== undefined : slot.keyboard !== false))
+          .filter((binding) =>
+            binding.device === "gamepad" ? slot.gamepad !== undefined : binding.device === "xr" ? slot.xr === true : slot.keyboard !== false,
+          )
           .map((binding) => (binding.device === "gamepad" && slot.gamepad !== undefined ? { ...binding, gamepad: slot.gamepad } : binding)),
       })),
     }));

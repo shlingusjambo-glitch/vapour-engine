@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/vapour-core",
+  "crates/vapour-render",
+  "crates/vapour-wasm",
+]
+
+[workspace.package]
+version = "0.2.0-alpha"
+edition = "2024"
+license = "LGPL-3.0-or-later"
+repository = "https://github.com/vapour-engine/vapour"
+rust-version = "1.89"
+
+[workspace.dependencies]
+glam = { version = "0.30", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["serde", "v4", "js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+console_error_panic_hook = "0.1"
+bytemuck = { version = "1", features = ["derive"] }
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["wgsl"] }
+rapier3d = { version = "0.34", features = ["simd-stable", "serde-serialize"] }
+rapier2d = { version = "0.34", features = ["simd-stable", "serde-serialize"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = "debuginfo"
+
+[profile.release.package.vapour-wasm]
+opt-level = "s"

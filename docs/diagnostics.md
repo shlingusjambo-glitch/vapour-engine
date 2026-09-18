@@ -176,3 +176,21 @@ A DOM overlay is invisible inside an immersive session. Build the model with
 `buildOverlayModel` and render it into a world-space panel instead —
 `formatOverlayText` gives you the text directly, and the model gives you rows if
 you want to lay them out yourself.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import Diagnostics
+
+var diagnostics = new Diagnostics()
+
+export func frame(work):
+    diagnostics.begin("game.frame")
+    work()
+    diagnostics.end("game.frame")
+    diagnostics.add("game.frames", 1)
+    return diagnostics.counter("game.frame").sample().mean
+```

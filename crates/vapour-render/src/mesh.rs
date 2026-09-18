@@ -66,6 +66,70 @@ impl MeshVertex {
     }
 }
 
+/// One vertex's skinning data: up to 4 influencing bones and their weights,
+/// parallel to `MeshData::vertices` — index *i* here describes vertex *i*.
+///
+/// This is a separate buffer rather than fields on [`MeshVertex`] so that the
+/// overwhelming majority of meshes, which are never skinned, pay nothing for
+/// the attribute layout change; [`MeshGpu`](crate::surface) still uploads a
+/// zero-filled one for them so the pipeline's vertex-buffer layout never has
+/// to branch between a skinned and a static variant.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct SkinVertex {
+    pub bone_indices: [u32; 4],
+    pub bone_weights: [f32; 4],
+}
+
+impl SkinVertex {
+    /// A vertex with no bone influence. `bone_weights` summing to zero is how
+    /// the shader recognises "not skinned" and leaves the position alone.
+    pub const UNSKINNED: Self = Self {
+        bone_indices: [0; 4],
+        bone_weights: [0.0; 4],
+    };
+}
+
+/// Flattens per-bone matrices into the layout the GPU storage buffer expects:
+/// one bone after another, 16 column-major floats each, so a palette for `N`
+/// bones is exactly `16 * N` floats with bone `i` at `[16*i .. 16*i + 16]`.
+#[must_use]
+pub fn pack_bone_palette(matrices: &[[f32; 16]]) -> Vec<f32> {
+    matrices.iter().flatten().copied().collect()
+}
+
+/// The CPU-side reference for what `standard_pbr.wgsl`'s vertex stage does to
+/// a skinned position: blend up to 4 bone matrices by (normalised) weight,
+/// then transform the rest-pose position through the blend. Weights summing
+/// to (near) zero mean "not skinned" and the rest position passes through
+/// unchanged — the same convention `SkinVertex::UNSKINNED` and the shader use.
+#[must_use]
+pub fn skin_vertex_position(
+    vertex: &SkinVertex,
+    bone_matrices: &[[f32; 16]],
+    rest_position: [f32; 3],
+) -> [f32; 3] {
+    let total: f32 = vertex.bone_weights.iter().sum();
+    if total <= 0.0001 {
+        return rest_position;
+    }
+    let mut blended = [0.0f32; 16];
+    for influence in 0..4 {
+        let weight = vertex.bone_weights[influence] / total;
+        if weight == 0.0 {
+            continue;
+        }
+        let bone = &bone_matrices[vertex.bone_indices[influence] as usize];
+        for component in 0..16 {
+            blended[component] += bone[component] * weight;
+        }
+    }
+    let [x, y, z] = rest_position;
+    std::array::from_fn(|axis| {
+        blended[axis] * x + blended[4 + axis] * y + blended[8 + axis] * z + blended[12 + axis]
+    })
+}
+
 /// CPU-side geometry ready to upload.
 ///
 /// Indices are `u32` throughout. Built-in primitives would fit in `u16`, but
@@ -76,6 +140,9 @@ impl MeshVertex {
 pub struct MeshData {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
+    /// One entry per vertex when this mesh is skinned; `None` for the common
+    /// static case.
+    pub skin: Option<Vec<SkinVertex>>,
 }
 
 impl MeshData {
@@ -138,6 +205,15 @@ impl MeshData {
                 return Err(MeshError::NonFiniteVertex { index });
             }
         }
+        if let Some(skin) = &self.skin
+            && skin.len() != self.vertices.len() {
+                return Err(MeshError::AttributeLength {
+                    attribute: "skin",
+                    actual: skin.len(),
+                    expected: self.vertices.len(),
+                    vertices: self.vertices.len(),
+                });
+            }
         Ok(())
     }
 
@@ -321,6 +397,7 @@ pub fn build_mesh_with_attributes(
     let mesh = MeshData {
         vertices,
         indices: indices.to_vec(),
+        skin: None,
     };
     mesh.validate()?;
     Ok(mesh)
@@ -335,7 +412,7 @@ fn generate_tangents(
     let count = positions.len() / 3;
     let mut tangent = vec![[0.0_f32; 3]; count];
     let mut bitangent = vec![[0.0_f32; 3]; count];
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         let [a, b, c] = [
             triangle[0] as usize,
             triangle[1] as usize,
@@ -848,6 +925,55 @@ mod tests {
 
     fn length(value: [f32; 3]) -> f32 {
         dot(value, value).sqrt()
+    }
+
+    const IDENTITY: [f32; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+
+    #[test]
+    fn a_bone_palette_packs_matrices_back_to_back_in_column_major_order() {
+        let mut translated = IDENTITY;
+        translated[12] = 5.0;
+        let packed = pack_bone_palette(&[IDENTITY, translated]);
+        assert_eq!(packed.len(), 32, "16 floats per bone, 2 bones");
+        assert_eq!(&packed[0..16], &IDENTITY[..]);
+        assert_eq!(&packed[16..32], &translated[..]);
+    }
+
+    #[test]
+    fn a_single_bone_pose_translates_the_vertex_exactly() {
+        let mut bone = IDENTITY;
+        bone[12] = 2.0;
+        bone[13] = 3.0;
+        bone[14] = -1.0;
+        let vertex = SkinVertex {
+            bone_indices: [0, 0, 0, 0],
+            bone_weights: [1.0, 0.0, 0.0, 0.0],
+        };
+        let result = skin_vertex_position(&vertex, &[bone], [1.0, 1.0, 1.0]);
+        assert_eq!(result, [3.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn two_bones_blend_by_normalised_weight() {
+        let mut bone_a = IDENTITY;
+        bone_a[12] = 10.0;
+        let bone_b = IDENTITY; // identity: contributes the rest position unmoved
+        let vertex = SkinVertex {
+            // Unnormalised weights (3 : 1) must behave like the normalised
+            // (0.75 : 0.25) split — authored weights are rarely pre-normalised.
+            bone_indices: [0, 1, 0, 0],
+            bone_weights: [3.0, 1.0, 0.0, 0.0],
+        };
+        let result = skin_vertex_position(&vertex, &[bone_a, bone_b], [0.0, 0.0, 0.0]);
+        assert_eq!(result, [7.5, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn zero_total_weight_means_unskinned_and_the_rest_position_passes_through() {
+        let result = skin_vertex_position(&SkinVertex::UNSKINNED, &[IDENTITY], [4.0, 5.0, 6.0]);
+        assert_eq!(result, [4.0, 5.0, 6.0]);
     }
 
     #[test]

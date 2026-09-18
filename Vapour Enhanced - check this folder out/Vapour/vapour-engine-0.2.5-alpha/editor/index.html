@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0e0e0d" />
+    <title>Vapour Engine</title>
+    <script type="module" crossorigin src="/assets/index-DztWO1OR.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DcqDTOTH.css">
+  </head>
+  <body>
+    <section id="hub-root" class="hub">
+      <div class="hub-atmosphere" aria-hidden="true"><span></span><span></span><span></span></div>
+      <aside class="hub-sidebar">
+        <div class="hub-brand"><span class="brand-mark" aria-hidden="true"><i></i></span><span class="hub-brand-copy"><strong>Vapour</strong><small>ENGINE HUB</small></span></div>
+        <nav aria-label="Hub navigation">
+          <button class="active" data-hub-page="projects"><span aria-hidden="true">▤</span> Projects</button>
+          <button data-hub-page="installs"><span aria-hidden="true">▾</span> Installs</button>
+          <button data-hub-page="learn"><span aria-hidden="true">◇</span> Learn</button>
+        </nav>
+        <div class="hub-sidebar-footer">
+          <div class="hub-runtime"><span class="runtime-light"></span><span><strong>0.2.0-alpha</strong><small>EDITOR READY</small></span></div>
+          <button class="theme-toggle" data-action="toggle-theme" title="Switch between the light and dark editor theme">
+            <span class="theme-toggle-label">APPEARANCE</span><span id="hub-theme-name">Dark</span>
+          </button>
+        </div>
+      </aside>
+      <main class="hub-main">
+        <section data-hub-panel="projects">
+          <header class="hub-page-header">
+            <div><span class="eyebrow">WORKSPACES / LOCAL</span><h1>Your projects</h1><p>Create, reopen, and manage Vapour games from one place.</p></div>
+            <div class="hub-actions"><button class="button secondary" data-hub-action="open">Open</button><button class="button primary" data-hub-action="new">New project</button></div>
+          </header>
+          <div id="hub-error" class="hub-error" role="alert" hidden></div>
+          <div id="recent-projects" class="project-grid"></div>
+          <div id="hub-empty" class="hub-empty">
+            <div class="hub-empty-copy"><span class="eyebrow">NOTHING HERE YET</span>
+              <h2>Build something<br />atmospheric.</h2>
+              <p>Create your first 2D, 3D, or WebXR project. Vapour keeps source assets readable and generated data separate, so your work stays reviewable in Git.</p>
+              <button class="button primary" data-hub-action="new">Create a project <span aria-hidden="true">↗</span></button>
+            </div>
+            <div class="vapour-orbit" aria-hidden="true"><span class="orbit-core"></span><i></i><i></i><i></i><b>WEBGPU</b><b>WASM</b><b>WEBXR</b></div>
+          </div>
+        </section>
+        <section data-hub-panel="installs" hidden>
+          <header class="hub-page-header"><div><span class="eyebrow">EDITOR VERSIONS</span><h1>Installs</h1><p>Projects pin an editor version so authoring and builds stay reproducible.</p></div></header>
+          <article class="install-card">
+            <div class="install-icon"><span class="brand-mark" aria-hidden="true"><i></i></span></div>
+            <div class="install-copy"><strong>Vapour 0.2.0-alpha</strong><span>Current development editor</span><small>RUST 1.87 · WEBGPU · TYPESCRIPT SCRIPTING</small></div>
+            <span class="badge">INSTALLED</span>
+          </article>
+          <p class="hub-note">Side-by-side version installs arrive with the first tagged release. Until then every project pins <code>0.2.0-alpha</code>, and the Hub refuses to open a project that asks for a version this editor cannot provide.</p>
+        </section>
+        <section data-hub-panel="learn" hidden>
+          <header class="hub-page-header"><div><span class="eyebrow">DOCUMENTATION</span><h1>Learn Vapour</h1><p>The shortest path from an empty project to a deployed browser game.</p></div></header>
+          <div class="learn-grid">
+            <article><span class="learn-index">01</span><span class="eyebrow">QUICK START</span><h2>Create and run</h2><p>Create a project, understand its source-controlled layout, and run the development server with the headers advanced browser features need.</p><code>pnpm vapour dev ./MyGame</code></article>
+            <article><span class="learn-index">02</span><span class="eyebrow">ARCHITECTURE</span><h2>How Vapour fits together</h2><p>The Rust runtime, the batched WebAssembly boundary, TypeScript gameplay scripts, and the WebGPU render graph.</p><code>docs/architecture/overview.md</code></article>
+            <article><span class="learn-index">03</span><span class="eyebrow">AUTOMATION</span><h2>Drive it from an agent</h2><p>Deterministic JSON output and stable commands, so Codex, Claude Code, or any shell-capable agent can build a game here.</p><code>pnpm vapour validate . --json</code></article>
+          </div>
+        </section>
+      </main>
+      <dialog id="new-project-dialog" class="dialog">
+        <form method="dialog">
+          <header><div><span class="eyebrow">NEW WORKSPACE</span><h2>Create a project</h2></div><button id="cancel-project" value="cancel" class="dialog-close" aria-label="Close">✕</button></header>
+          <label class="field">Project name<input id="new-project-name" autocomplete="off" placeholder="Untitled Game" /></label>
+          <div class="dialog-columns">
+            <label class="field">Template<select id="new-project-template"></select></label>
+            <label class="field">Editor version<select><option>0.2.0-alpha</option></select></label>
+          </div>
+          <label class="field">Project storage<select id="new-project-storage"><option value="browser">Browser workspace (private local storage)</option><option value="disk">Choose a disk folder</option></select></label>
+          <p class="dialog-note">Browser projects stay on this device. Disk projects are ordinary Git-friendly folders you can also drive from the Vapour CLI and coding agents.</p>
+          <footer><button class="button secondary" id="cancel-project-footer" value="cancel">Cancel</button><button class="button primary" id="create-project" type="button" disabled>Create project</button></footer>
+        </form>
+      </dialog>
+    </section>
+
+    <div id="app" hidden>
+      <header class="menubar">
+        <div class="brand" aria-label="Vapour Engine"><span class="brand-mark" aria-hidden="true"><i></i></span><span class="brand-name">Vapour</span><span class="brand-edition">EDITOR</span></div>
+        <nav class="menus" aria-label="Application menu">
+          <div class="menu" data-menu="file">
+            <button class="menu-title" aria-haspopup="true" aria-expanded="false">File</button>
+            <div class="menu-popup" role="menu">
+              <button role="menuitem" data-action="new-scene">New Scene<kbd>Ctrl N</kbd></button>
+              <button role="menuitem" data-action="save">Save Scene<kbd>Ctrl S</kbd></button>
+              <hr />
+              <button role="menuitem" data-action="build">Build…</button>
+              <hr />
+              <button role="menuitem" data-action="hub">Close Project</button>
+            </div>
+          </div>
+          <div class="menu" data-menu="edit">
+            <button class="menu-title" aria-haspopup="true" aria-expanded="false">Edit</button>
+            <div class="menu-popup" role="menu">
+              <button role="menuitem" data-action="undo">Undo<kbd>Ctrl Z</kbd></button>
+              <button role="menuitem" data-action="redo">Redo<kbd>Ctrl Y</kbd></button>
+              <hr />
+              <button role="menuitem" data-action="duplicate">Duplicate<kbd>Ctrl D</kbd></button>
+              <button role="menuitem" data-action="delete">Delete<kbd>Del</kbd></button>
+              <hr />
+              <button role="menuitem" data-action="select-all">Select All<kbd>Ctrl A</kbd></button>
+              <button role="menuitem" data-action="deselect">Deselect<kbd>Esc</kbd></button>
+            </div>
+          </div>
+          <div class="menu" data-menu="gameobject">
+            <button class="menu-title" aria-haspopup="true" aria-expanded="false">GameObject</button>
+            <div class="menu-popup" role="menu">
+              <button role="menuitem" data-create-kind="entity">Create Empty</button>
+              <button role="menuitem" data-action="create-child">Create Empty Child</button>
+              <hr />
+              <div id="gameobject-mesh-items"></div>
+              <hr />
+              <button role="menuitem" data-create-kind="camera">Camera</button>
+              <button role="menuitem" data-create-kind="light">Directional Light</button>
+              <hr />
+              <button role="menuitem" data-action="unparent">Move To Scene Root</button>
+            </div>
+          </div>
+          <div class="menu" data-menu="component">
+            <button class="menu-title" aria-haspopup="true" aria-expanded="false">Component</button>
+            <div class="menu-popup" role="menu">
+              <button role="menuitem" data-action="open-add-component">Add Component…</button>
+            </div>
+          </div>
+          <div class="menu" data-menu="view">
+            <button class="menu-title" aria-haspopup="true" aria-expanded="false">View</button>
+            <div class="menu-popup" role="menu">
+              <button role="menuitem" data-action="frame-selected">Frame Selected<kbd>F</kbd></button>
+              <button role="menuitem" data-action="reset-view">Reset Scene Camera</button>
+              <hr />
+              <button role="menuitem" data-bottom-tab="assets">Assets Panel</button>
+              <button role="menuitem" data-bottom-tab="console">Console Panel</button>
+              <button role="menuitem" data-bottom-tab="profiler">Profiler Panel</button>
+              <hr />
+              <button role="menuitem" data-action="toggle-theme">Toggle Theme</button>
+            </div>
+          </div>
+        </nav>
+        <span class="project-chip"><span class="project-state-dot"></span><span id="project-name">Starter Project</span><small>0.2.0-alpha</small></span>
+        <div class="menubar-right">
+          <span class="save-state" id="save-state">SAVED</span>
+          <span class="menubar-divider"></span>
+          <span class="session-state"><i></i>LOCAL</span>
+        </div>
+      </header>
+
+      <div class="toolbar" role="toolbar" aria-label="Scene tools">
+        <span class="toolbar-section-label">TRANSFORM</span>
+        <div class="tool-group">
+          <button class="tool active" data-tool="select" title="Select (Q)" aria-label="Select tool">▣</button>
+          <button class="tool" data-tool="translate" title="Move (W)" aria-label="Move tool">✥</button>
+          <button class="tool" data-tool="rotate" title="Rotate (E)" aria-label="Rotate tool">⟳</button>
+          <button class="tool" data-tool="scale" title="Scale (R)" aria-label="Scale tool">⤢</button>
+        </div>
+        <div class="tool-group">
+          <button class="pivot-toggle" id="transform-space" title="Toggle between local and world gizmo axes">LOCAL</button>
+        </div>
+        <label class="toolbar-toggle" title="Move and scale in whole STEP increments, and rotate in whole ANGLE increments">
+          <input type="checkbox" id="grid-snap" /> SNAP
+        </label>
+        <label class="toolbar-number" title="Movement and scale increment, in world units">STEP<input id="grid-step" type="number" min="0.001" step="0.05" value="0.5" /></label>
+        <label class="toolbar-number" title="Rotation increment, in degrees">ANGLE<input id="angle-step" type="number" min="1" step="1" value="15" /></label>
+
+        <div class="play-controls">
+          <button class="play-button" data-action="play" title="Play (Ctrl+P)" aria-label="Play">▶</button>
+          <button class="play-button" data-action="pause" title="Pause preview" aria-label="Pause">❚❚</button>
+        </div>
+
+        <div class="toolbar-spacer"></div>
+        <span class="renderer-badge" title="Active renderer">WEBGPU</span>
+      </div>
+
+      <main class="workspace">
+        <aside class="panel hierarchy-panel">
+          <div class="panel-heading">
+            <h2><span class="panel-mark"></span> HIERARCHY</h2>
+            <button class="icon-button" data-action="open-create-entity" title="Create entity" aria-label="Create entity">＋</button>
+          </div>
+          <div class="panel-search"><input id="hierarchy-search" type="search" placeholder="Filter scene…" aria-label="Filter scene" /></div>
+          <div class="scene-root"><span>◇</span><strong id="hierarchy-scene-name">Main.scene</strong><small id="hierarchy-object-count">0 OBJECTS</small></div>
+          <div class="tree" id="hierarchy" role="tree" aria-label="Scene hierarchy" tabindex="0"></div>
+          <div class="panel-footer" id="hierarchy-hint">Drag a row onto another to parent it.</div>
+        </aside>
+
+        <section class="center-stack">
+          <div class="viewport-shell">
+            <div class="view-tabs">
+              <button class="active" data-view="scene">Scene</button>
+              <button data-view="game">Game</button>
+              <span class="view-scene-name" id="scene-name">Main.scene</span>
+              <span class="view-hint" id="view-hint">Alt+Drag orbit · Middle-drag pan · Wheel zoom · F frame</span>
+            </div>
+            <div class="viewport-stage">
+              <canvas id="viewport" aria-label="Scene viewport"></canvas>
+              <div class="viewport-grid" aria-hidden="true"></div>
+              <svg id="gizmo-layer" class="gizmo-layer" aria-hidden="true"></svg>
+              <div class="viewport-overlay top-left"><span id="viewport-mode">PERSPECTIVE</span><span class="overlay-separator"></span><span id="viewport-shading">SHADED</span></div>
+              <div class="axis-widget" aria-label="World axes"><b class="axis-y">Y</b><b class="axis-x">X</b><b class="axis-z">Z</b></div>
+              <div class="viewport-message" id="viewport-message" hidden></div>
+            </div>
+          </div>
+
+          <section class="panel bottom-panel">
+            <div class="panel-tabs">
+              <button class="active" data-bottom-tab="assets">Assets</button>
+              <button data-bottom-tab="console">Console <span class="count" id="console-count">0</span></button>
+              <button data-bottom-tab="profiler">Profiler</button>
+              <div class="toolbar-spacer"></div>
+              <button class="icon-button" data-action="clear-console" title="Clear console">Clear</button>
+            </div>
+            <div class="bottom-content assets" id="assets-tab">
+              <aside class="asset-folders"><span class="asset-root-label">PROJECT</span><button class="active">Assets</button><button>Scenes</button><button>Scripts</button><button>Settings</button></aside>
+              <div class="asset-browser"><div class="asset-path"><span>Assets</span><small>PROJECT ROOT</small></div><div class="asset-grid" id="asset-grid"></div></div>
+            </div>
+            <div class="bottom-content log-list" id="console-tab" hidden></div>
+            <div class="bottom-content profiler" id="profiler-tab" hidden>
+              <div class="stat"><span>FPS</span><strong id="stat-fps">—</strong></div>
+              <div class="stat"><span>FRAME</span><strong id="stat-frame">—</strong></div>
+              <div class="stat"><span>CPU ENCODE</span><strong id="stat-encode">—</strong></div>
+              <div class="stat"><span>DRAW CALLS</span><strong id="stat-draws">—</strong></div>
+              <div class="stat"><span>TRIANGLES</span><strong id="stat-triangles">—</strong></div>
+              <div class="stat"><span>ENTITIES</span><strong id="stat-entities">0</strong></div>
+            </div>
+          </section>
+        </section>
+
+        <aside class="panel inspector-panel">
+          <div class="panel-heading"><h2><span class="panel-mark"></span> INSPECTOR</h2><span class="panel-note" id="inspector-note"></span></div>
+          <div id="inspector-empty" class="empty-state"><span class="empty-inspector-icon">⌁</span><strong>No selection</strong><p>Select an entity in the Hierarchy or Scene view to inspect its components.</p></div>
+          <form id="inspector" hidden autocomplete="off">
+            <div class="entity-header">
+              <input id="entity-enabled" type="checkbox" aria-label="Entity enabled" />
+              <input id="entity-name" aria-label="Entity name" />
+            </div>
+            <section class="component" data-component="vapour.Transform">
+              <header><span class="component-icon">✥</span><h3>Transform</h3></header>
+              <div class="component-body">
+                <div class="vector-row"><label>Position</label><input data-transform="position" data-axis="0" type="number" step="0.1" aria-label="Position X" /><input data-transform="position" data-axis="1" type="number" step="0.1" aria-label="Position Y" /><input data-transform="position" data-axis="2" type="number" step="0.1" aria-label="Position Z" /></div>
+                <div class="vector-row"><label>Rotation</label><input data-transform="rotation" data-axis="0" type="number" step="1" aria-label="Rotation X" /><input data-transform="rotation" data-axis="1" type="number" step="1" aria-label="Rotation Y" /><input data-transform="rotation" data-axis="2" type="number" step="1" aria-label="Rotation Z" /></div>
+                <div class="vector-row"><label>Scale</label><input data-transform="scale" data-axis="0" type="number" step="0.1" aria-label="Scale X" /><input data-transform="scale" data-axis="1" type="number" step="0.1" aria-label="Scale Y" /><input data-transform="scale" data-axis="2" type="number" step="0.1" aria-label="Scale Z" /></div>
+              </div>
+            </section>
+            <div id="component-list"></div>
+            <button class="button block" type="button" data-action="open-add-component">Add Component</button>
+          </form>
+        </aside>
+      </main>
+      <footer class="statusbar">
+        <span id="status-message">Ready</span>
+        <span class="statusbar-right"><span id="selection-summary"></span><span id="capability-summary">Checking browser…</span></span>
+      </footer>
+    </div>
+
+    <dialog id="create-entity-dialog" class="dialog picker">
+      <form method="dialog">
+        <header><div><span class="eyebrow">CREATE</span><h2>Add to scene</h2></div><button value="cancel" class="dialog-close" aria-label="Close">✕</button></header>
+        <input id="create-search" type="search" class="picker-search" placeholder="Search…" aria-label="Search objects to create" />
+        <div class="picker-list" id="create-picker-list"></div>
+      </form>
+    </dialog>
+
+    <dialog id="add-component-dialog" class="dialog picker">
+      <form method="dialog">
+        <header><div><span class="eyebrow">COMPONENTS</span><h2>Add Component</h2></div><button value="cancel" class="dialog-close" aria-label="Close">✕</button></header>
+        <input id="component-search" type="search" class="picker-search" placeholder="Search components…" aria-label="Search components" />
+        <div class="picker-list" id="component-picker-list"></div>
+      </form>
+    </dialog>
+  </body>
+</html>

@@ -178,3 +178,16 @@ Stereo rendering needs a frustum per eye. Build them with `cameraFrustum` from
 each eye's camera snapshot and union the results, or cull once against a
 widened frustum; culling per eye twice is usually the wrong trade, since the
 two views overlap almost entirely.
+
+## Vegetation instancing and impostors (Mirage)
+
+Scattered vegetation (`scatterVegetation`, `vegetationInstances` — see
+[`terrain.md`](terrain.md)) is not a separate draw path: it produces ordinary
+`RenderInstanceSnapshot`s, one per placed tree/rock, so culling and LOD above
+apply to it unchanged. `vegetationLodRegistry` builds an `LodRegistry` chain
+per prototype that has an impostor mesh, switching to it below a screen-height
+threshold exactly the way any other mesh's LOD chain would — a billboard
+impostor is just another mesh id as far as this pipeline is concerned. A
+prototype with no `impostorMeshId` is left out of the registry and stays at
+full detail at any distance (or gets its own `cullScreenHeight` if it should
+disappear instead).

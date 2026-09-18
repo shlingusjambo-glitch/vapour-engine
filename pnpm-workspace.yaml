@@ -6,6 +6,8 @@ packages:
   - examples/physics-sandbox
   - examples/multiplayer-arena
   - examples/coastal-city
+  - examples/open-world
+  - examples/xr-playground
 
 allowBuilds:
   esbuild: true

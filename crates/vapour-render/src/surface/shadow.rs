@@ -5,7 +5,7 @@ use glam::{Mat4, Vec3};
 
 use super::{
     InstanceData, ViewState,
-    lighting::LIGHT_KIND_DIRECTIONAL,
+    lighting::{GpuLight, LIGHT_KIND_DIRECTIONAL, LIGHT_KIND_POINT, LIGHT_KIND_SPOT},
     mesh::VertexLayout,
     pipeline::{DEPTH_FORMAT, uniform_buffer},
 };
@@ -13,6 +13,114 @@ use crate::mesh::MeshVertex;
 
 pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
 pub(crate) const SHADOW_MAP_SIZE: u32 = 2048;
+
+/// Atlas budget for point and spot shadows: 12 slots. A point light needs 6
+/// consecutive slots (one per cube face); a spot light needs 1. That's room
+/// for two full point lights, or one point light plus six spot lights, or
+/// twelve spot lights, in any mix — [`assign_shadow_slots`] documents how a
+/// scene that asks for more than fits gets prioritised.
+pub(crate) const MAX_SHADOW_SLOTS: usize = 12;
+/// Resolution of each point/spot shadow face. Smaller than the directional
+/// cascades because there are up to twelve of them alive at once.
+pub(crate) const POINT_SPOT_SHADOW_SIZE: u32 = 512;
+
+/// One point or spot light that was granted atlas slots this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ShadowAssignment {
+    pub(crate) light_index: usize,
+    pub(crate) base_slot: usize,
+    pub(crate) slot_count: usize,
+}
+
+/// Decides which point/spot lights render into the shared atlas this frame.
+///
+/// Eviction policy: every shadow-casting point/spot light is scored by
+/// `intensity / distance_to_camera^2` (closer, brighter lights win). Point
+/// lights need 6 consecutive slots, spot lights need 1. Candidates are
+/// visited highest-priority first and packed greedily into the remaining
+/// budget; a light that no longer fits is skipped entirely (rendered lit but
+/// unshadowed) rather than fragmenting slots or preempting a light already
+/// placed — so the assignment for a given frame is deterministic and cheap to
+/// compute every frame with no persistent state.
+pub(crate) fn assign_shadow_slots(
+    lights: &[GpuLight],
+    camera: Vec3,
+    budget: usize,
+) -> Vec<ShadowAssignment> {
+    let mut candidates: Vec<(usize, f32, usize)> = lights
+        .iter()
+        .enumerate()
+        .filter_map(|(index, light)| {
+            let kind = light.vector_kind[3];
+            let slots = if (kind - LIGHT_KIND_POINT).abs() < 0.1 {
+                6
+            } else if (kind - LIGHT_KIND_SPOT).abs() < 0.1 {
+                1
+            } else {
+                return None;
+            };
+            if light.color_intensity[3] <= 0.0 {
+                return None;
+            }
+            let position = Vec3::from_slice(&light.vector_kind[..3]);
+            let distance = position.distance(camera).max(1.0);
+            let priority = light.color_intensity[3] / (distance * distance);
+            Some((index, priority, slots))
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut used = 0usize;
+    let mut assignments = Vec::new();
+    for (light_index, _priority, slot_count) in candidates {
+        if used + slot_count > budget {
+            continue;
+        }
+        assignments.push(ShadowAssignment {
+            light_index,
+            base_slot: used,
+            slot_count,
+        });
+        used += slot_count;
+    }
+    assignments
+}
+
+/// The six cube-face view matrices for a point light at `position`, in the
+/// standard cubemap face order (+X, -X, +Y, -Y, +Z, -Z) with the up vectors
+/// that convention expects.
+pub(crate) fn cube_face_view_matrices(position: Vec3) -> [Mat4; 6] {
+    let directions: [(Vec3, Vec3); 6] = [
+        (Vec3::X, Vec3::NEG_Y),
+        (Vec3::NEG_X, Vec3::NEG_Y),
+        (Vec3::Y, Vec3::Z),
+        (Vec3::NEG_Y, Vec3::NEG_Z),
+        (Vec3::Z, Vec3::NEG_Y),
+        (Vec3::NEG_Z, Vec3::NEG_Y),
+    ];
+    directions.map(|(forward, up)| Mat4::look_at_rh(position, position + forward, up))
+}
+
+/// A 90-degree symmetric perspective projection, matched to one cube face.
+pub(crate) fn point_shadow_projection(near: f32, far: f32) -> Mat4 {
+    Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, near, far.max(near + 0.01))
+}
+
+/// The single view-projection matrix a spot light's shadow slot renders with.
+pub(crate) fn spot_shadow_matrix(light: &GpuLight) -> Mat4 {
+    let position = Vec3::from_slice(&light.vector_kind[..3]);
+    let direction = Vec3::from_slice(&light.secondary_range[..3]).normalize_or(Vec3::NEG_Y);
+    let range = light.secondary_range[3].max(0.1);
+    let cos_outer = light.cone[1].clamp(-0.999, 0.999);
+    let outer_angle = cos_outer.acos().max(0.01);
+    let up = if direction.y.abs() > 0.99 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    let view = Mat4::look_at_rh(position, position + direction, up);
+    let projection = Mat4::perspective_rh((outer_angle * 2.0).min(3.0), 1.0, 0.05, range);
+    projection * view
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -30,6 +138,14 @@ pub(crate) struct ShadowGpu {
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) cascade_buffers: Vec<wgpu::Buffer>,
     pub(crate) cascade_bind_groups: Vec<wgpu::BindGroup>,
+    /// Point/spot atlas: [`MAX_SHADOW_SLOTS`] depth layers sharing the same
+    /// pass uniform layout as the directional cascades, so the existing
+    /// shadow pipeline draws into either without a second pipeline.
+    pub(crate) _point_spot_texture: wgpu::Texture,
+    pub(crate) point_spot_sampling_view: wgpu::TextureView,
+    pub(crate) point_spot_layer_views: Vec<wgpu::TextureView>,
+    pub(crate) point_spot_buffers: Vec<wgpu::Buffer>,
+    pub(crate) point_spot_bind_groups: Vec<wgpu::BindGroup>,
 }
 
 impl ShadowGpu {
@@ -95,6 +211,55 @@ impl ShadowGpu {
             cascade_buffers.push(buffer);
             cascade_bind_groups.push(bind_group);
         }
+
+        let point_spot_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Vapour point/spot shadow atlas"),
+            size: wgpu::Extent3d {
+                width: POINT_SPOT_SHADOW_SIZE,
+                height: POINT_SPOT_SHADOW_SIZE,
+                depth_or_array_layers: MAX_SHADOW_SLOTS as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let point_spot_sampling_view =
+            point_spot_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Vapour point/spot shadow sampling view"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+        let point_spot_layer_views = (0..MAX_SHADOW_SLOTS)
+            .map(|slot| {
+                point_spot_texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("Vapour point/spot shadow slot"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: slot as u32,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let mut point_spot_buffers = Vec::new();
+        let mut point_spot_bind_groups = Vec::new();
+        for slot in 0..MAX_SHADOW_SLOTS {
+            let buffer =
+                uniform_buffer::<ShadowPassUniform>(device, &format!("Vapour shadow slot {slot}"));
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Vapour point/spot shadow slot bind group"),
+                layout: &layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            point_spot_buffers.push(buffer);
+            point_spot_bind_groups.push(bind_group);
+        }
+
         Self {
             layout,
             _texture: texture,
@@ -103,6 +268,11 @@ impl ShadowGpu {
             sampler,
             cascade_buffers,
             cascade_bind_groups,
+            _point_spot_texture: point_spot_texture,
+            point_spot_sampling_view,
+            point_spot_layer_views,
+            point_spot_buffers,
+            point_spot_bind_groups,
         }
     }
 }
@@ -131,6 +301,7 @@ pub(crate) fn create_shadow_pipeline(
             buffers: &[
                 Some(<MeshVertex as VertexLayout>::layout()),
                 Some(InstanceData::layout()),
+                Some(crate::mesh::SkinVertex::layout()),
             ],
         },
         primitive: wgpu::PrimitiveState {
@@ -284,6 +455,95 @@ mod tests {
         let second = shadow_cascades(&moved, 1.0);
         let delta = first[0].view_projection[3][0] - second[0].view_projection[3][0];
         assert!(delta.abs() < 0.0001, "cascade projection moved by {delta}");
+    }
+
+    #[test]
+    fn each_cube_face_view_matrix_maps_its_own_direction_straight_ahead() {
+        let position = Vec3::new(1.0, 2.0, 3.0);
+        let matrices = cube_face_view_matrices(position);
+        let directions = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ];
+        for (face, direction) in directions.into_iter().enumerate() {
+            // A point 10 units out along the face's own direction must land
+            // on the camera-space -Z axis (straight ahead), centred in x/y,
+            // for every face — and only that face.
+            let probe = position + direction * 10.0;
+            let view_space = matrices[face].transform_point3(probe);
+            assert!(
+                view_space.x.abs() < 1e-4 && view_space.y.abs() < 1e-4,
+                "face {face} did not centre its own probe point: {view_space:?}"
+            );
+            assert!(
+                view_space.z < -9.999,
+                "face {face} did not put its probe on -Z: {view_space:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn point_shadow_projection_is_a_symmetric_ninety_degree_frustum() {
+        let projection = point_shadow_projection(0.1, 25.0);
+        // A point on the +45-degree edge of a 90-degree FOV frustum sits
+        // exactly on the clip-space boundary (x == w after projection).
+        let edge = projection * glam::Vec4::new(1.0, 0.0, -1.0, 1.0);
+        assert!((edge.x - edge.w).abs() < 1e-4, "edge={edge:?}");
+    }
+
+    #[test]
+    fn shadow_slots_are_granted_to_the_highest_priority_lights_first() {
+        let bright_near = GpuLight {
+            vector_kind: [0.0, 0.0, 0.0, LIGHT_KIND_POINT],
+            color_intensity: [1.0, 1.0, 1.0, 10.0],
+            secondary_range: [0.0, 0.0, 0.0, 20.0],
+            cone: [0.0; 4],
+        };
+        let dim_far = GpuLight {
+            vector_kind: [50.0, 0.0, 0.0, LIGHT_KIND_POINT],
+            color_intensity: [1.0, 1.0, 1.0, 1.0],
+            secondary_range: [0.0, 0.0, 0.0, 20.0],
+            cone: [0.0; 4],
+        };
+        let spot = GpuLight {
+            vector_kind: [0.0, 0.0, 5.0, LIGHT_KIND_SPOT],
+            color_intensity: [1.0, 1.0, 1.0, 5.0],
+            secondary_range: [0.0, -1.0, 0.0, 20.0],
+            cone: [0.9, 0.8, 0.0, 0.0],
+        };
+        let lights = [bright_near, dim_far, spot];
+        // Budget for one point light (6) plus the spot (1); the second point
+        // light (needs 6 more, only 5 left) must be skipped, not fragmented.
+        let assignments = assign_shadow_slots(&lights, Vec3::ZERO, 7);
+        assert_eq!(assignments.len(), 2);
+        assert_eq!(assignments[0].light_index, 0);
+        assert_eq!(assignments[0].base_slot, 0);
+        assert_eq!(assignments[0].slot_count, 6);
+        assert_eq!(assignments[1].light_index, 2);
+        assert_eq!(assignments[1].base_slot, 6);
+        assert_eq!(assignments[1].slot_count, 1);
+    }
+
+    #[test]
+    fn shadow_slots_never_exceed_the_budget() {
+        // Twelve point lights (72 slots of demand) against the real
+        // MAX_SHADOW_SLOTS budget must still pack to exactly two full lights.
+        let lights: Vec<GpuLight> = (0..12)
+            .map(|i| GpuLight {
+                vector_kind: [i as f32 * 5.0, 0.0, 0.0, LIGHT_KIND_POINT],
+                color_intensity: [1.0, 1.0, 1.0, 1.0],
+                secondary_range: [0.0, 0.0, 0.0, 20.0],
+                cone: [0.0; 4],
+            })
+            .collect();
+        let assignments = assign_shadow_slots(&lights, Vec3::ZERO, MAX_SHADOW_SLOTS);
+        let used: usize = assignments.iter().map(|a| a.slot_count).sum();
+        assert!(used <= MAX_SHADOW_SLOTS);
+        assert_eq!(assignments.len(), 2);
     }
 
     #[test]

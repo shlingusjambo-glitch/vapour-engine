@@ -150,10 +150,49 @@ Vapour uses these labels consistently:
 | Inheriting theme registry with design tokens and a high-contrast variant                          | Working      |
 | XR cone raycasting, direct and ray grabbing, and two-handed manipulation                          | Working      |
 | XR locomotion with snap and smooth turning, comfort fades, and ballistic teleport arcs            | Working      |
-| Compound colliders, constraint editor, and physics debug draw                                     | Planned      |
-| Heightfield terrain mesh, native collider, sampling, and deterministic generation                 | Experimental |
-| Terrain sculpt/paint editor, vegetation, LOD, and streaming integration                           | Planned      |
-| Animation graph and navmesh baking/crowds                                                         | Planned      |
+| Physics materials, friction/restitution combine rules, mass properties, and centre of mass         | Working      |
+| Runtime pose/ragdoll blending with activation and recovery ramps                                  | Experimental |
+| Raycast vehicles: wheel suspension, steering, and engine/brake torque                              | Experimental |
+| Worker-side physics stepping over SharedArrayBuffer with a same-thread fallback and interpolation | Experimental |
+| Physics debug rendering and a body/contact/step-time statistics block                              | Working      |
+| Point and spot shadows sharing the directional shadow atlas, with light-priority eviction           | Experimental |
+| Skinned mesh rendering: per-vertex bone weights through the WASM bridge to the PBR shader          | Experimental |
+| Versioned asset-description language: schema, validation, shape-grammar evaluator, and libraries   | Working      |
+| Procedural material graphs baking runtime PBR textures                                             | Working      |
+| Vegetation, prop, vehicle, and weapon generators alongside architecture and characters              | Working      |
+| 2D sprite, icon, and atlas generators sharing the material graph's texture nodes                    | Working      |
+| Chunked terrain with materials, splat maps, LOD mesher integration, and seam stitching               | Working      |
+| Terrain sculpt/paint brushes with undo and procedural heightfield generation                        | Working      |
+| Seeded vegetation scattering with mesh/impostor LOD switching                                       | Working      |
+| Voxel block/skylight propagation with bounded incremental relight                                   | Working      |
+| Versioned voxel chunk save format and pure chunk-sync message application                           | Working      |
+| Localized NavMesh rebaking matching a full rebake field-for-field                                    | Working      |
+| 2D grid navigation, string-pulled corridors, and dynamic obstacle rerouting                          | Working      |
+| 2D lights, a general parallax layer, sprite atlases, and a 2D particle adapter                       | Working      |
+| Anchor, flex, grid, and responsive-breakpoint UI layout                                             | Working      |
+| Full UI widget set: panels, images, dropdowns, and progress bars alongside existing controls         | Working      |
+| World-space and XR UI canvases with ray-based hit testing                                            | Working      |
+| Font assets, fallback chains, and outlined/shadowed rich text                                        | Working      |
+| Cached, batched text layout in world and screen space                                                | Working      |
+| XR controllers and hands as first-class input devices, with rebinding                                | Working      |
+| XR rig: reference-space height, floor calibration, and seated/standing per-eye cameras               | Working      |
+| XR haptics queueing, hysteresis-based hand-pose recognition, and capability detection                | Working      |
+| AudioWorklet DSP path with a documented main-thread fallback                                         | Experimental |
+| Networked transforms and server-authoritative rigid-body sync with ownership transfer                | Working      |
+| Server-side lag compensation with bounded snapshot rewind                                            | Working      |
+| Networked scene synchronization with held replication for loading clients                            | Working      |
+| Rooms, matchmaking, authentication hooks, reconnection, and host migration                           | Working      |
+| Environment cubemaps, prefiltered specular mips, irradiance, and a BRDF LUT for image-based lighting | Experimental |
+| Depth-projected decals with atlas regions, tint, fade, and angle falloff                              | Experimental |
+| Render-to-texture targets with per-layer viewports, resize policy, and read/write cycle detection     | Experimental |
+| Integration: networked characters reconciling root motion against server rigid-body authority        | Working      |
+| Integration: XR grabs requesting network ownership with a documented contention policy               | Working      |
+| Integration: nav agents driving the physics character motor; AI state driving animator parameters    | Working      |
+| Integration: generated assets producing colliders and a baked, linked NavMesh automatically           | Working      |
+| Integration: streamed chunks rebaking navigation locally; spatial audio following entity transforms  | Working      |
+| Executable open-world showcase: terrain, vegetation, streaming, origin shifts, crowd nav, local rebake | Working      |
+| Executable XR playground showcase: rig, hands, haptics, grabbing, locomotion, world-space UI          | Working      |
+| Vapour Script binding coverage test driving every Mirage subsystem from real VS source               | Working      |
 
 This table is a release gate, not marketing copy. A feature becomes Working
 only after runtime/editor integration, serialization, errors, automated tests,

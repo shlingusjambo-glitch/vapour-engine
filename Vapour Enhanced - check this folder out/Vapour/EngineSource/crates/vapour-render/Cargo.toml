@@ -1,0 +1,33 @@
+[package]
+name = "vapour-render"
+description = "WebGPU render graph, shader, resource, and device layer for Vapour Engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+glam.workspace = true
+naga.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, features = ["webgpu"] }
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+web-sys = { workspace = true, features = ["Performance", "Window", "WorkerGlobalScope"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { workspace = true, features = ["vulkan", "metal", "dx12"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+criterion = "0.7"
+
+[[bench]]
+name = "render_graph"
+harness = false

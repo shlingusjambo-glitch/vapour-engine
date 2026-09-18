@@ -316,3 +316,18 @@ ragdoll capsules — which is what stops shots passing through a visible body.
 
 `generateCrowd` is seeded, so a populated street is reproducible: a multiplayer
 game replicates "spawn crowd 7" rather than fifty character descriptions.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/assetgen" import buildAsset
+
+export func street():
+    var crate = { kind: "prop", spec: { kind: "crate", size: 1 } }
+    var row = { kind: "group", children: [{ kind: "ref", component: "crate" }], repeat: { count: 4, step: [2, 0, 0] } }
+    var built = buildAsset({ version: 1, id: "street", components: { crate: crate }, root: row })
+    return built.compiled.stats.triangles
+```

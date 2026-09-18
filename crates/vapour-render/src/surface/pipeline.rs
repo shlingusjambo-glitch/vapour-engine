@@ -6,7 +6,8 @@ use crate::{
     CompiledRenderGraph, GraphError, PassKind, RenderGraph, ResourceKind, mesh::MeshVertex,
 };
 
-use super::{frame::*, material::*, mesh::*, shadow::ShadowGpu};
+use super::{environment::EnvironmentGpu, frame::*, material::*, mesh::*, shadow::ShadowGpu};
+use crate::mesh::SkinVertex;
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -51,7 +52,76 @@ pub(crate) fn create_frame_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Image-based lighting: prefiltered specular cube, irradiance
+            // cube, split-sum BRDF lookup, and their shared sampler.
+            cube_layout_entry(5),
+            cube_layout_entry(6),
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
+    })
+}
+
+fn cube_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::Cube,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// Bone matrices for every skinned instance drawn this frame, packed
+/// back-to-back (see `pack_bone_palette`). Fixed-size so the frame bind group
+/// never needs rebuilding when a scene's skinned-instance count changes;
+/// [`SurfaceRenderer::set_render_layers`] rejects a submission that would
+/// overflow it rather than truncating bones silently.
+pub const MAX_BONE_MATRICES: usize = 4096;
+
+pub(crate) fn create_bone_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Vapour bone palette"),
+        size: (MAX_BONE_MATRICES * std::mem::size_of::<[f32; 16]>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     })
 }
 
@@ -59,12 +129,27 @@ pub(crate) fn create_frame_gpu(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     shadows: &ShadowGpu,
+    bone_buffer: &wgpu::Buffer,
+    environment: &EnvironmentGpu,
     index: usize,
 ) -> FrameGpu {
     let label = format!("Vapour frame layer {index}");
     let buffer = uniform_buffer::<FrameUniforms>(device, &label);
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(&label),
+    let bind_group =
+        frame_bind_group_with_buffer(device, layout, &buffer, shadows, bone_buffer, environment);
+    FrameGpu { buffer, bind_group }
+}
+
+pub(crate) fn frame_bind_group_with_buffer(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+    shadows: &ShadowGpu,
+    bone_buffer: &wgpu::Buffer,
+    environment: &EnvironmentGpu,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Vapour frame bind group"),
         layout,
         entries: &[
             wgpu::BindGroupEntry {
@@ -79,16 +164,39 @@ pub(crate) fn create_frame_gpu(
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(&shadows.sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&shadows.point_spot_sampling_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: bone_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&environment.specular.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(&environment.irradiance.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(&environment.brdf_lut.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: wgpu::BindingResource::Sampler(&environment.sampler),
+            },
         ],
-    });
-    FrameGpu { buffer, bind_group }
+    })
 }
 
 pub(crate) fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Vapour render instances"),
         size: (capacity * std::mem::size_of::<InstanceData>()) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        usage: super::culling::SOURCE_INSTANCE_USAGE,
         mapped_at_creation: false,
     })
 }
@@ -113,6 +221,7 @@ pub(crate) fn create_standard_pipelines(
                     buffers: &[
                         Some(<MeshVertex as VertexLayout>::layout()),
                         Some(InstanceData::layout()),
+                        Some(SkinVertex::layout()),
                     ],
                 },
                 primitive: wgpu::PrimitiveState {
@@ -220,7 +329,8 @@ pub(crate) fn create_depth(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // Sampled by the decal pass to reconstruct surface positions.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -232,9 +342,23 @@ pub(crate) fn create_frame_graph() -> Result<CompiledRenderGraph, GraphError> {
     let swapchain = graph.import_resource("swapchain", ResourceKind::Texture);
     let depth = graph.create_resource("depth", ResourceKind::Texture);
     let shadow = graph.create_resource("directional-shadow-array", ResourceKind::Texture);
+    let point_spot_shadow = graph.create_resource("point-spot-shadow-atlas", ResourceKind::Texture);
     let hdr = graph.create_resource("hdr-scene-color", ResourceKind::Texture);
     graph.add_pass("directional-shadow", PassKind::Render, [], [shadow])?;
-    graph.add_pass("standard-pbr", PassKind::Render, [shadow], [hdr, depth])?;
+    graph.add_pass(
+        "point-spot-shadow",
+        PassKind::Render,
+        [],
+        [point_spot_shadow],
+    )?;
+    graph.add_pass(
+        "standard-pbr",
+        PassKind::Render,
+        [shadow, point_spot_shadow],
+        [hdr, depth],
+    )?;
+    graph.add_pass("decals", PassKind::Render, [depth], [hdr])?;
+    graph.add_pass("particles", PassKind::Render, [depth], [hdr])?;
     graph.add_pass("tone-map", PassKind::Render, [hdr], [swapchain])?;
     graph.compile()
 }
@@ -251,7 +375,17 @@ mod tests {
             .iter()
             .map(|pass| pass.name.as_str())
             .collect();
-        assert_eq!(names, ["directional-shadow", "standard-pbr", "tone-map"]);
+        assert_eq!(
+            names,
+            [
+                "directional-shadow",
+                "point-spot-shadow",
+                "standard-pbr",
+                "decals",
+                "particles",
+                "tone-map"
+            ]
+        );
     }
 
     #[test]

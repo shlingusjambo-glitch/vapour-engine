@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "id": "efa106b2-02cf-4b8a-b7c4-695b79bb6d48",
+  "name": "Vapour Alpha 0.2 Acceptance",
+  "editorVersion": "0.2.0-alpha",
+  "startupScene": "Assets/Scenes/Main.scene.json",
+  "scriptEntry": "Scripts/main.ts",
+  "rendering": {
+    "preferredCanvasFormat": "auto",
+    "powerPreference": "high-performance"
+  }
+}

@@ -14,3 +14,5 @@ packages/engine/wasm/
 projects/*/.vapour/cache/
 projects/*/.vapour/build/
 /release/
+Vapour Enhanced - check this folder out/Vapour/vapour-engine-0.2.5-alpha/cli/node
+Vapour Enhanced - check this folder out/Vapour/tools/mmcp-0.1.0/soundfonts/MuseScore_General.sf2

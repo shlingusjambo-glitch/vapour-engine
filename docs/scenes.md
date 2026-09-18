@@ -194,3 +194,18 @@ without an id table.
 Scene transitions are a comfort issue in VR: an abrupt swap is disorienting.
 Use `transitionTo` with a fade, and prefer `additive` streaming so the world
 never fully disappears.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import SceneManager
+
+var scenes = new SceneManager()
+
+export async func go(name):
+    await scenes.load(name, { mode: "additive" })
+    return scenes.active
+```

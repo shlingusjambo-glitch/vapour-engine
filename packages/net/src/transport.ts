@@ -59,6 +59,8 @@ interface QueuedPacket {
 export class LoopbackNetwork {
   readonly #queue: QueuedPacket[] = [];
   readonly #endpoints = new Map<ConnectionId, LoopbackEndpoint>();
+  /** Latest reliable delivery time per sender->receiver, so jitter cannot reorder them. */
+  readonly #reliableTail = new Map<string, number>();
   #conditions: Required<NetworkConditions>;
   #now = 0;
   #sequence = 0;
@@ -121,7 +123,15 @@ export class LoopbackNetwork {
       // Push this one later so a subsequent packet overtakes it.
       delay += this.#conditions.latencyMs * 0.5 + 1;
     }
-    this.#queue.push({ target, message: { from, data: data.slice() }, deliverAt: this.#now + delay, sequence: this.#sequence++ });
+    let deliverAt = this.#now + delay;
+    if (reliable) {
+      // Reliable also means ordered, as on a WebSocket: a spawn must not
+      // overtake the welcome that precedes it just because jitter was kinder.
+      const lane = `${String(from)}:${String(to)}`;
+      deliverAt = Math.max(deliverAt, this.#reliableTail.get(lane) ?? 0);
+      this.#reliableTail.set(lane, deliverAt);
+    }
+    this.#queue.push({ target, message: { from, data: data.slice() }, deliverAt, sequence: this.#sequence++ });
   }
 
   /** @internal Advances the clock and delivers due packets. */
@@ -134,18 +144,18 @@ export class LoopbackNetwork {
         index += 1;
         continue;
       }
-      packet.target.deliver(packet.message);
-      this.#delivered += 1;
+      if (packet.target.deliver(packet.message)) this.#delivered += 1;
       this.#queue.splice(index, 1);
     }
   }
 
-  /** @internal */
+  /**
+   * @internal Stops new packets reaching `id`. Packets already in flight still
+   * land, as a socket flushes what was written before it closes — the reject
+   * a server sends just before disconnecting a peer has to arrive.
+   */
   removeEndpoint(id: ConnectionId): void {
     this.#endpoints.delete(id);
-    for (let index = this.#queue.length - 1; index >= 0; index -= 1) {
-      if (this.#queue[index]!.target.id === id) this.#queue.splice(index, 1);
-    }
   }
 }
 
@@ -186,9 +196,11 @@ export class LoopbackEndpoint implements Transport {
     this.#network.removeEndpoint(this.id);
   }
 
-  /** @internal */
-  deliver(message: TransportMessage): void {
-    if (!this.#closed) this.#inbox.push(message);
+  /** @internal Returns false when the endpoint has closed and the packet is lost. */
+  deliver(message: TransportMessage): boolean {
+    if (this.#closed) return false;
+    this.#inbox.push(message);
+    return true;
   }
 }
 

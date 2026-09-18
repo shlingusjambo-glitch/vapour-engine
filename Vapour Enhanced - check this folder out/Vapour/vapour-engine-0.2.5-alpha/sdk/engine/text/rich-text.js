@@ -1,0 +1,295 @@
+const TAG = /\[(\/?)([a-z]+)(?:=([^\]]*))?\]/gi;
+/**
+ * Parses inline markup into styled runs.
+ *
+ * Supported: `[b]`, `[i]`, `[color=name]`, `[size=1.5]`, `[icon=name]`,
+ * `[outline=name]`, `[shadow=name]`.
+ * Everything else is left as literal text and reported, because a translator
+ * who typos a tag should see their text, not lose it.
+ */
+export function parseRichText(source, options = {}) {
+    const palette = options.palette ?? {};
+    const base = options.baseStyle ?? {};
+    const stack = [base];
+    const runs = [];
+    let index = 0;
+    const current = () => stack[stack.length - 1];
+    const push = (text) => {
+        if (text.length > 0)
+            runs.push({ text, style: current() });
+    };
+    TAG.lastIndex = 0;
+    for (let match = TAG.exec(source); match !== null; match = TAG.exec(source)) {
+        const whole = match[0];
+        const closing = match[1];
+        const tag = (match[2] ?? "").toLowerCase();
+        const value = match[3];
+        const known = tag === "b" || tag === "i" || tag === "color" || tag === "size" || tag === "icon" || tag === "outline" || tag === "shadow";
+        if (!known) {
+            options.onUnknownTag?.(tag);
+            continue;
+        }
+        push(source.slice(index, match.index));
+        index = match.index + whole.length;
+        if (closing) {
+            // An unbalanced close is ignored rather than unwinding past the base
+            // style, which would leave the rest of the string unstyled.
+            if (stack.length > 1)
+                stack.pop();
+            continue;
+        }
+        if (tag === "icon") {
+            if (value)
+                runs.push({ text: "", style: current(), icon: value });
+            continue;
+        }
+        const next = { ...current() };
+        if (tag === "b")
+            next.bold = true;
+        if (tag === "i")
+            next.italic = true;
+        if (tag === "color" && value) {
+            const color = palette[value];
+            // An unknown colour keeps the current one; content must not be able to
+            // make text invisible against its background.
+            if (color)
+                next.color = color;
+            else
+                options.onUnknownTag?.("color=" + value);
+        }
+        if (tag === "size" && value) {
+            const parsed = Number.parseFloat(value);
+            if (Number.isFinite(parsed) && parsed > 0)
+                next.scale = (current().scale ?? 1) * parsed;
+        }
+        if (tag === "outline" && value) {
+            const outline = options.outlines?.[value];
+            if (outline)
+                next.outline = outline;
+            else
+                options.onUnknownTag?.("outline=" + value);
+        }
+        if (tag === "shadow" && value) {
+            const shadow = options.shadows?.[value];
+            if (shadow)
+                next.shadow = shadow;
+            else
+                options.onUnknownTag?.("shadow=" + value);
+        }
+        stack.push(next);
+    }
+    push(source.slice(index));
+    return runs;
+}
+/** Strips markup, for measuring, searching, or reading aloud. */
+export function stripRichText(source) {
+    return parseRichText(source).map((run) => run.text).join("");
+}
+/**
+ * Chooses which font draws each character.
+ *
+ * Fallback is not optional for any game shipping outside one language: a Latin
+ * font has no CJK glyphs, and a UI rendering those as blank boxes is broken for
+ * a large fraction of players. Resolving per character rather than per string is
+ * what lets a mixed sentence work.
+ */
+export function resolveGlyphs(stack, text) {
+    if (stack.fonts.length === 0)
+        throw new Error("A font stack needs at least one font.");
+    const coverage = stack.fonts.map((font) => new Set(font.glyphs.map((glyph) => glyph.character)));
+    const resolved = [];
+    // Iterating the string yields code points, so a non-BMP character is one
+    // entry rather than two broken halves.
+    for (const character of text) {
+        let chosen = -1;
+        for (const [index, set] of coverage.entries()) {
+            if (set.has(character)) {
+                chosen = index;
+                break;
+            }
+        }
+        resolved.push(chosen >= 0
+            ? { font: stack.fonts[chosen], character, missing: false }
+            : { font: stack.fonts[0], character: stack.fonts[0].fallbackCharacter ?? "?", missing: true });
+    }
+    return resolved;
+}
+/** Characters no font in the stack can draw, for reporting a coverage gap. */
+export function missingCharacters(stack, text) {
+    const missing = new Set();
+    const characters = [...text];
+    for (const [index, entry] of resolveGlyphs(stack, text).entries()) {
+        if (entry.missing)
+            missing.add(characters[index] ?? entry.character);
+    }
+    return [...missing];
+}
+/**
+ * Measures text without building a mesh.
+ *
+ * Layout needs a label's size before it can place it, and building glyph
+ * geometry just to throw it away is the kind of waste that shows up as a
+ * stutter when a dialogue box opens.
+ */
+export function measureText(font, text, options) {
+    if (!(options.fontSize > 0))
+        throw new Error("A font size must be positive.");
+    if (!(font.designSize > 0))
+        throw new Error("Font " + font.id + " has a non-positive design size.");
+    const scale = options.fontSize / font.designSize;
+    const lineHeight = font.lineHeight * scale * (options.lineSpacing ?? 1);
+    const advances = new Map(font.glyphs.map((glyph) => [glyph.character, glyph.advance]));
+    const advanceOf = (character) => (advances.get(character) ?? advances.get(font.fallbackCharacter ?? "?") ?? 0) * scale;
+    const lines = wrapText(text, options.maxWidth, advanceOf, options.breakAnywhere ?? false);
+    let widest = 0;
+    for (const line of lines) {
+        let width = 0;
+        for (const character of line)
+            width += advanceOf(character);
+        widest = Math.max(widest, width);
+    }
+    return {
+        width: widest,
+        height: lines.length * lineHeight,
+        lineCount: lines.length,
+        ascent: font.lineHeight * scale * 0.8,
+    };
+}
+/**
+ * Breaks text into lines.
+ *
+ * Explicit newlines always break. Words break at spaces by default; a word
+ * longer than the whole line is split rather than overflowing, because a URL or
+ * a long compound word should not push a dialogue box off screen.
+ */
+export function wrapText(text, maxWidth, advanceOf, breakAnywhere = false) {
+    const lines = [];
+    for (const paragraph of text.split("\n")) {
+        if (maxWidth === undefined || !(maxWidth > 0)) {
+            lines.push(paragraph);
+            continue;
+        }
+        let line = "";
+        let width = 0;
+        const units = breakAnywhere ? [...paragraph] : splitWords(paragraph);
+        for (const unit of units) {
+            let unitWidth = 0;
+            for (const character of unit)
+                unitWidth += advanceOf(character);
+            if (width > 0 && width + unitWidth > maxWidth) {
+                lines.push(line);
+                line = unit.trimStart();
+                width = 0;
+                for (const character of line)
+                    width += advanceOf(character);
+                continue;
+            }
+            // A single unit wider than the line: split it rather than overflowing.
+            if (width === 0 && unitWidth > maxWidth && [...unit].length > 1) {
+                let chunk = "";
+                let chunkWidth = 0;
+                for (const character of unit) {
+                    const characterWidth = advanceOf(character);
+                    if (chunkWidth + characterWidth > maxWidth && chunk.length > 0) {
+                        lines.push(chunk);
+                        chunk = "";
+                        chunkWidth = 0;
+                    }
+                    chunk += character;
+                    chunkWidth += characterWidth;
+                }
+                // A trailing space left over from the split must not start the next
+                // line, or a wrapped paragraph gets a whitespace-only line.
+                line = chunk.trimStart();
+                width = 0;
+                for (const character of line)
+                    width += advanceOf(character);
+                continue;
+            }
+            line += unit;
+            width += unitWidth;
+        }
+        lines.push(line);
+    }
+    return lines;
+}
+/** Splits into words, keeping each word's trailing space with it. */
+function splitWords(paragraph) {
+    const words = [];
+    let current = "";
+    for (const character of paragraph) {
+        current += character;
+        if (character === " ") {
+            words.push(current);
+            current = "";
+        }
+    }
+    if (current.length > 0)
+        words.push(current);
+    return words;
+}
+/**
+ * Caches laid-out text by its content and options.
+ *
+ * A HUD relaying identical text every frame is the common case, and rebuilding
+ * a glyph mesh for an unchanged string is pure waste. Keyed on everything that
+ * affects the result, so a changed colour or width produces a new entry rather
+ * than a stale one.
+ */
+export class TextLayoutCache {
+    #entries = new Map();
+    #order = [];
+    #maxEntries;
+    #hits = 0;
+    #misses = 0;
+    constructor(maxEntries = 256) {
+        if (!Number.isInteger(maxEntries) || maxEntries < 1)
+            throw new Error("A text cache needs room for at least one entry.");
+        this.#maxEntries = maxEntries;
+    }
+    static key(text, options) {
+        // Sorted so two option objects with the same values collide correctly.
+        const parts = Object.entries(options)
+            .filter(([, value]) => value !== undefined)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, value]) => name + "=" + JSON.stringify(value));
+        return text + "|" + parts.join("|");
+    }
+    get(key) {
+        const entry = this.#entries.get(key);
+        if (!entry) {
+            this.#misses += 1;
+            return undefined;
+        }
+        this.#hits += 1;
+        // Least-recently-used: a HUD's stable strings stay, one-off text does not.
+        const position = this.#order.indexOf(key);
+        if (position >= 0)
+            this.#order.splice(position, 1);
+        this.#order.push(key);
+        return entry.value;
+    }
+    set(key, value, bytes = 0) {
+        const existing = this.#order.indexOf(key);
+        if (existing >= 0)
+            this.#order.splice(existing, 1);
+        this.#entries.set(key, { value, bytes });
+        this.#order.push(key);
+        while (this.#order.length > this.#maxEntries) {
+            const evicted = this.#order.shift();
+            if (evicted !== undefined)
+                this.#entries.delete(evicted);
+        }
+    }
+    clear() {
+        this.#entries.clear();
+        this.#order.length = 0;
+    }
+    stats() {
+        let bytes = 0;
+        for (const entry of this.#entries.values())
+            bytes += entry.bytes;
+        return { entries: this.#entries.size, hits: this.#hits, misses: this.#misses, bytes };
+    }
+}
+//# sourceMappingURL=rich-text.js.map

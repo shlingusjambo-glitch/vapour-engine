@@ -26,6 +26,11 @@ pub struct RenderCapabilities {
     pub timestamp_queries: bool,
     pub multi_draw_indirect: bool,
     pub indirect_first_instance: bool,
+    /// Whether instances can be frustum-culled on the GPU. Compute and
+    /// indirect draws are WebGPU core; what the compaction needs beyond them
+    /// is a non-zero `first_instance` in indirect args, which is the
+    /// `indirect-first-instance` feature.
+    pub gpu_culling: bool,
     pub shader_f16: bool,
     pub texture_compression: TextureCompression,
     pub max_texture_dimension_2d: u32,
@@ -69,6 +74,7 @@ impl RenderCapabilities {
             timestamp_queries,
             multi_draw_indirect,
             indirect_first_instance,
+            gpu_culling: indirect_first_instance,
             shader_f16,
             texture_compression,
             max_texture_dimension_2d: limits.max_texture_dimension_2d,

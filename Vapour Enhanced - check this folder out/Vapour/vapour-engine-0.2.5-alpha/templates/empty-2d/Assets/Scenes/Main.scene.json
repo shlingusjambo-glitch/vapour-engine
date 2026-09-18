@@ -1,0 +1,176 @@
+{
+  "formatVersion": 1,
+  "id": "5f48bba9-7b2b-40a0-8528-48b1b2c63f6c",
+  "name": "Main 2D",
+  "entities": [
+    {
+      "id": "7174b059-bfed-4761-9989-d00132060f13",
+      "name": "Directional Light",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.DirectionalLight",
+          "version": 1,
+          "data": {
+            "color": [
+              1,
+              0.96,
+              0.88
+            ],
+            "intensity": 3
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              3,
+              4
+            ],
+            "rotation": [
+              0.3007057995042731,
+              0,
+              0,
+              0.9537169507482269
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "a69dff20-4c66-4209-b5fa-fd7968bb76b0",
+      "name": "Player",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.SpriteRenderer",
+          "version": 1,
+          "data": {
+            "material": "builtin:default",
+            "color": [
+              0.85,
+              0.45,
+              0.25,
+              1
+            ],
+            "sortingLayer": 1,
+            "order": 0
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ce3fbd5b-7450-46d0-bf97-8b0b71f136b9",
+      "name": "Main Camera",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.Camera",
+          "version": 1,
+          "data": {
+            "projection": "orthographic",
+            "fieldOfView": 60,
+            "orthographicSize": 10,
+            "near": 0.1,
+            "far": 100
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              0,
+              10
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "f3203fbf-1680-4d9c-81f5-8ebdc3fe2650",
+      "name": "Ground",
+      "enabled": true,
+      "components": [
+        {
+          "typeName": "vapour.SpriteRenderer",
+          "version": 1,
+          "data": {
+            "material": "builtin:default",
+            "color": [
+              0.2,
+              0.22,
+              0.24,
+              1
+            ],
+            "sortingLayer": 0,
+            "order": 0
+          }
+        },
+        {
+          "typeName": "vapour.Transform",
+          "version": 1,
+          "data": {
+            "position": [
+              0,
+              -2,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              12,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

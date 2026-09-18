@@ -4,7 +4,7 @@
  * own inputs. `ArenaServer` is the whole authority, and `ArenaClient` is
  * deliberately thin — if it needed to be clever, the split would be wrong.
  */
-import { NetworkClient, NetworkServer, type ConnectionId, type NetState, type ServerConnection, type Transport } from "@vapour/net";
+import { NetworkClient, NetworkServer, type ClientOptions, type ConnectionId, type NetState, type ServerConnection, type Transport } from "@vapour/net";
 import {
   MAX_HEALTH, PROJECTILE_DAMAGE, PROJECTILE_LIFETIME, PROJECTILE_SPEED, RESPAWN_SECONDS,
   newPlayer, projectileHits, spawnPoint, stepPlayer, stepProjectile,
@@ -30,26 +30,51 @@ export class ArenaServer {
   #deaths = 0;
   #nextSpawnIndex = 0;
 
-  constructor(transport: Transport, options: { tickRate?: number } = {}) {
+  constructor(transport: Transport, options: { tickRate?: number; scene?: string; reconnectGraceTicks?: number } = {}) {
     this.net = new NetworkServer(transport, {
       tickRate: options.tickRate ?? 20,
+      ...(options.scene === undefined ? {} : { scene: options.scene }),
+      ...(options.reconnectGraceTicks === undefined ? {} : { reconnectGraceTicks: options.reconnectGraceTicks }),
       onInput: (connection, _tick, payload) => this.#applyInput(connection, payload as PlayerInputPayload),
+      // Avatars are spawned here rather than in `join` so a client admitted by
+      // a `join` message and one added directly get the same treatment — and a
+      // resumed session gets its old avatar back instead of a new one.
+      onJoin: (connection, resumed) => (resumed ? this.#rebind(connection.id) : this.#spawnAvatar(connection.id)),
     });
   }
 
-  /** Admits a player and spawns their avatar, owned by them. */
+  /** Admits a player directly, without a `join` message. */
   join(connection: ConnectionId): number {
     this.net.addConnection(connection);
-    const spawn = spawnPoint(this.#nextSpawnIndex++, 8);
-    const entity = this.net.spawn("player", { ...newPlayer(spawn.x, spawn.z) }, connection);
-    this.#players.set(connection, entity.id);
-    return entity.id;
+    return this.#players.get(connection)!;
   }
 
   leave(connection: ConnectionId): void {
     this.#players.delete(connection);
     // The net layer despawns anything the connection owned.
     this.net.removeConnection(connection);
+  }
+
+  /** Drops a player but keeps their avatar for the grace window. */
+  drop(connection: ConnectionId): string | undefined {
+    const session = this.net.dropConnection(connection);
+    if (session === undefined) this.#players.delete(connection);
+    return session;
+  }
+
+  #spawnAvatar(connection: ConnectionId): void {
+    const spawn = spawnPoint(this.#nextSpawnIndex++, 8);
+    const entity = this.net.spawn("player", { ...newPlayer(spawn.x, spawn.z) }, connection);
+    this.#players.set(connection, entity.id);
+  }
+
+  /** A resumed session's avatar already follows the new connection id; re-key it. */
+  #rebind(connection: ConnectionId): void {
+    for (const entity of this.net.entities) {
+      if (entity.prefab !== "player" || entity.owner !== connection) continue;
+      for (const [previous, id] of this.#players) if (id === entity.id) this.#players.delete(previous);
+      this.#players.set(connection, entity.id);
+    }
   }
 
   playerEntity(connection: ConnectionId): number | undefined {
@@ -166,13 +191,28 @@ export class ArenaServer {
 export class ArenaClient {
   readonly net: NetworkClient;
 
-  constructor(transport: Transport) {
+  constructor(transport: Transport, options: Pick<ClientOptions, "onSceneLoad" | "onSpawn" | "onReject"> = {}) {
     this.net = new NetworkClient(transport, {
       // Prediction uses the *same* function the server does. Two copies of this
       // logic would diverge and show up as constant mispredictions.
       predict: (state, input) => stepPlayer(state as PlayerState, input as PlayerInputPayload) as NetState,
       interpolationDelayTicks: 2,
+      ...options,
     });
+  }
+
+  join(credentials: NetState = {}): void {
+    this.net.join(credentials, 0);
+  }
+
+  /** Reconnects with the token from a previous connection; the avatar is kept. */
+  resume(session: string): void {
+    this.net.resume(session, {}, 0);
+  }
+
+  /** Tells the server the scene is loaded, which releases replication. */
+  ready(): void {
+    this.net.reportSceneProgress(1, true);
   }
 
   receive(): void {

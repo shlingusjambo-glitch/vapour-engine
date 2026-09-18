@@ -107,6 +107,28 @@ export interface NavMeshStats {
   readonly dynamicObstacles: number;
 }
 
+/** A world-space AABB (Y ignored) of the region that changed and needs
+ * rebaking — e.g. a streamed-in tile or an edited chunk of geometry. */
+export interface RebakeRegion {
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minZ: number;
+  readonly maxZ: number;
+}
+
+/** What a {@link NavMesh.rebakeRegion} call changed. Span counts are scoped to
+ * the requested region; `spansRebaked` also counts the halo recomputed around
+ * it to keep adjacency correct. */
+export interface RebakeReport {
+  readonly navmesh: NavMesh;
+  readonly spansAdded: number;
+  readonly spansRemoved: number;
+  readonly spansModified: number;
+  readonly spansRebaked: number;
+  readonly spansTotal: number;
+  readonly offMeshLinksInvalidated: number;
+}
+
 export const NAVMESH_DATA_VERSION = 1 as const;
 
 /** Source-control-friendly baked navigation asset. Infinity area costs are
@@ -463,6 +485,236 @@ export class NavMesh {
     };
   }
 
+  /**
+   * Rebakes only the spans touching `region`, splicing them into this mesh
+   * instead of rebaking whole. Built for streaming worlds: a newly loaded or
+   * edited tile shouldn't force every other tile's navmesh to reprocess.
+   *
+   * `input` must describe the tile's *current* geometry (not a delta) — a
+   * column inside `region` with no covering triangle becomes empty, which is
+   * how removed geometry is represented.
+   *
+   * Correctness relies on two rings around `region`, sized from the agent
+   * radius: a "halo" of `ceil(agentRadius / cellSize) + 1` columns where span
+   * *existence* is recomputed (erosion can only be affected this far from a
+   * geometry change), and one further ring where only *links* are
+   * recomputed against the halo's new spans. Everything outside that is
+   * mechanically unreachable by the edit and is carried over unchanged,
+   * other than a possible index renumbering — the flat span array has no
+   * gaps, so any change in span count shifts later indices; span *content*
+   * (position/area/links) outside the touched rings is otherwise untouched.
+   * Off-mesh links with an endpoint in the touched region are re-snapped by
+   * position; a removed endpoint drops the link.
+   */
+  rebakeRegion(input: NavMeshInput, region: RebakeRegion): RebakeReport {
+    const settings = this.settings;
+    const cell = settings.cellSize;
+    const origin = this.#origin;
+    const erodeCells = Math.ceil(settings.agentRadius / cell);
+    const halo = erodeCells + 1;
+
+    const regionBounds: ColumnBounds = {
+      x0: Math.floor((region.minX - origin[0]) / cell),
+      x1: Math.floor((region.maxX - origin[0]) / cell),
+      z0: Math.floor((region.minZ - origin[2]) / cell),
+      z1: Math.floor((region.maxZ - origin[2]) / cell),
+    };
+    const haloBounds = expandBounds(regionBounds, halo);
+    const outerBounds = expandBounds(haloBounds, 1);
+
+    // Surfaces for the working set: new geometry inside the region, existing
+    // (unchanged) geometry for the rest of the outer ring.
+    const surfaces = rasterizeSurfaces(input, settings, origin, regionBounds);
+    for (const [key, column] of this.#columns) {
+      const [x, z] = unpackColumnKey(key);
+      if (!inBounds(outerBounds, x, z) || inBounds(regionBounds, x, z))
+        continue;
+      surfaces.set(
+        key,
+        column.spans.map((span) => ({ y: span.y, area: span.area })),
+      );
+    }
+
+    const { spans: workingSpans, columns: workingColumns } =
+      buildSpansFromSurfaces(surfaces);
+    linkSpans(workingSpans, workingColumns, settings.agentMaxClimb);
+
+    // Existence (erosion) is only recomputed for the halo; the outer link
+    // ring keeps whatever spans it already had — its geometry never changed.
+    const erodeCellsForHalo = erodeCells;
+    const kept =
+      erodeCellsForHalo > 0
+        ? erode(workingSpans, workingColumns, erodeCellsForHalo)
+        : new Set(workingSpans.map((span) => span.index));
+    const survivingWorking = workingSpans.filter((span) => {
+      if (!inBounds(haloBounds, span.x, span.z)) return true; // outer ring: always kept
+      return kept.has(span.index);
+    });
+
+    // Match surviving working spans back to whatever previously occupied the
+    // same position, so unaffected adjacency carries over automatically.
+    const positionKey = (x: number, z: number, y: number): string =>
+      `${x}|${z}|${y}`;
+    const workingByPosition = new Map<string, NavSpan>();
+    for (const span of survivingWorking)
+      workingByPosition.set(positionKey(span.x, span.z, span.y), span);
+
+    const untouched = this.#spans.filter(
+      (span) => !inBounds(outerBounds, span.x, span.z),
+    );
+    const finalOrder: NavSpan[] = [...untouched, ...survivingWorking];
+    const finalIndexOf = new Map<NavSpan, number>();
+    finalOrder.forEach((span, index) => finalIndexOf.set(span, index));
+
+    // Old global index -> new global index, for every span that still exists.
+    const oldToNew = new Map<number, number>();
+    for (const span of this.#spans) {
+      if (!inBounds(outerBounds, span.x, span.z)) {
+        oldToNew.set(span.index, finalIndexOf.get(span)!);
+        continue;
+      }
+      const match = workingByPosition.get(
+        positionKey(span.x, span.z, span.y),
+      );
+      if (match) oldToNew.set(span.index, finalIndexOf.get(match)!);
+      // else: this span was removed or eroded away; links to it are dropped.
+    }
+
+    // Working-local index -> new global index, for spans built fresh above
+    // (needed because their `links` reference each other by local index, a
+    // different numbering than the old mesh's).
+    const workingLocalToNew = new Map<number, number>();
+    for (const span of survivingWorking)
+      workingLocalToNew.set(span.index, finalIndexOf.get(span)!);
+
+    // Cross-link the outer ring's true-exterior neighbours (outside
+    // `outerBounds`, never touched) to the working spans that now sit beside
+    // them. Working spans were only linked *within* the working set above,
+    // so this is the one splice that has to happen unconditionally, not just
+    // for brand-new spans: a surviving-but-rebuilt span (e.g. the outermost
+    // link-recompute ring) also lost its exterior-facing links along the way.
+    const exteriorLinks = new Map<NavSpan, Set<number>>();
+    for (const span of survivingWorking) {
+      for (const [dx, dz] of NEIGHBOUR_OFFSETS) {
+        const nx = span.x + dx;
+        const nz = span.z + dz;
+        if (inBounds(outerBounds, nx, nz)) continue;
+        for (const exterior of this.#columns.get(columnKey(nx, nz))?.spans ??
+          []) {
+          if (Math.abs(exterior.y - span.y) > settings.agentMaxClimb) continue;
+          const newSpanIndex = finalIndexOf.get(span)!;
+          const newExteriorIndex = oldToNew.get(exterior.index);
+          if (newExteriorIndex === undefined) continue;
+          (exteriorLinks.get(span) ?? exteriorLinks.set(span, new Set()).get(span)!).add(
+            newExteriorIndex,
+          );
+          (
+            exteriorLinks.get(exterior) ??
+            exteriorLinks.set(exterior, new Set()).get(exterior)!
+          ).add(newSpanIndex);
+        }
+      }
+    }
+
+    const workingSet = new Set<NavSpan>(survivingWorking);
+    const finalSpans: NavSpan[] = finalOrder.map((span, index) => {
+      const links = new Set<number>();
+      if (workingSet.has(span)) {
+        for (const local of span.links) {
+          const mapped = workingLocalToNew.get(local);
+          if (mapped !== undefined) links.add(mapped);
+        }
+      } else {
+        for (const old of span.links) {
+          const mapped = oldToNew.get(old);
+          if (mapped !== undefined) links.add(mapped);
+        }
+      }
+      for (const extra of exteriorLinks.get(span) ?? []) links.add(extra);
+      return {
+        index,
+        x: span.x,
+        z: span.z,
+        y: span.y,
+        area: span.area,
+        links: [...links],
+      };
+    });
+
+    const finalColumns = new Map<number, Column>();
+    for (const span of finalSpans) {
+      const key = columnKey(span.x, span.z);
+      const column = finalColumns.get(key) ?? { spans: [] };
+      column.spans.push(span);
+      finalColumns.set(key, column);
+    }
+
+    // Report, scoped to the requested region (not the wider halo/link rings).
+    const oldRegionSpans = this.#spans.filter((span) =>
+      inBounds(regionBounds, span.x, span.z),
+    );
+    const oldRegionByPosition = new Map(
+      oldRegionSpans.map((span) => [
+        positionKey(span.x, span.z, span.y),
+        span,
+      ]),
+    );
+    const newRegionSpans = finalSpans.filter((span) =>
+      inBounds(regionBounds, span.x, span.z),
+    );
+    const newRegionByPosition = new Map(
+      newRegionSpans.map((span) => [
+        positionKey(span.x, span.z, span.y),
+        span,
+      ]),
+    );
+    let spansModified = 0;
+    for (const [key, oldSpan] of oldRegionByPosition) {
+      const newSpan = newRegionByPosition.get(key);
+      if (newSpan && newSpan.area !== oldSpan.area) spansModified += 1;
+    }
+    const spansAdded = [...newRegionByPosition.keys()].filter(
+      (key) => !oldRegionByPosition.has(key),
+    ).length;
+    const spansRemoved = [...oldRegionByPosition.keys()].filter(
+      (key) => !newRegionByPosition.has(key),
+    ).length;
+
+    // Off-mesh links: re-snap by endpoint position, drop what no longer exists.
+    const newOffMesh: { from: number; to: number; cost: number; kind: string }[] =
+      [];
+    let offMeshInvalidated = 0;
+    for (const link of this.#offMesh) {
+      const from = oldToNew.get(link.from);
+      const to = oldToNew.get(link.to);
+      if (from === undefined || to === undefined) {
+        offMeshInvalidated += 1;
+        continue;
+      }
+      newOffMesh.push({ ...link, from, to });
+    }
+
+    const rebaked = new NavMesh(
+      settings,
+      finalSpans,
+      finalColumns,
+      origin,
+      [...this.#areas.values()],
+      0,
+    );
+    rebaked.#offMesh.push(...newOffMesh);
+
+    return {
+      navmesh: rebaked,
+      spansAdded,
+      spansRemoved,
+      spansModified,
+      spansRebaked: survivingWorking.length,
+      spansTotal: finalSpans.length,
+      offMeshLinksInvalidated: offMeshInvalidated,
+    };
+  }
+
   #columnOf(position: readonly number[]): [number, number] {
     return [
       Math.floor(
@@ -569,6 +821,149 @@ function columnKey(x: number, z: number): number {
   return ((x & 0xffff) << 16) | (z & 0xffff);
 }
 
+function unpackColumnKey(key: number): [number, number] {
+  return [((key >> 16) << 16) >> 16, (key << 16) >> 16];
+}
+
+const NEIGHBOUR_OFFSETS: readonly (readonly [number, number])[] = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+
+interface ColumnBounds {
+  readonly x0: number;
+  readonly x1: number;
+  readonly z0: number;
+  readonly z1: number;
+}
+
+function inBounds(bounds: ColumnBounds, x: number, z: number): boolean {
+  return x >= bounds.x0 && x <= bounds.x1 && z >= bounds.z0 && z <= bounds.z1;
+}
+
+function expandBounds(bounds: ColumnBounds, cells: number): ColumnBounds {
+  return {
+    x0: bounds.x0 - cells,
+    x1: bounds.x1 + cells,
+    z0: bounds.z0 - cells,
+    z1: bounds.z1 + cells,
+  };
+}
+
+/** Steps 1 and 2 of {@link bakeNavMesh}: rasterize triangles into per-column
+ * surface heights, merging near-coincident heights within one column.
+ *
+ * When `bounds` is given, only columns inside it are populated — triangles
+ * whose footprint falls entirely outside are skipped, which is what makes a
+ * {@link NavMesh.rebakeRegion} rebake cheaper than a full bake. */
+function rasterizeSurfaces(
+  input: NavMeshInput,
+  settings: Required<NavMeshSettings>,
+  origin: readonly [number, number, number],
+  bounds?: ColumnBounds,
+): Map<number, { y: number; area: number }[]> {
+  const triangleCount = input.indices.length / 3;
+  const cosLimit = Math.cos((settings.maxSlopeDegrees * Math.PI) / 180);
+  const cell = settings.cellSize;
+  const surfaces = new Map<number, { y: number; area: number }[]>();
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = corner(input, triangle, 0);
+    const b = corner(input, triangle, 1);
+    const c = corner(input, triangle, 2);
+    const normal = cross(subtract(b, a), subtract(c, a));
+    const length = Math.hypot(normal[0], normal[1], normal[2]);
+    if (length < 1e-12) continue;
+    if (normal[1] / length < cosLimit) continue; // too steep to stand on
+    const area = input.areas?.[triangle] ?? DEFAULT_AREA.id;
+
+    let x0 = Math.floor((Math.min(a[0], b[0], c[0]) - origin[0]) / cell);
+    let x1 = Math.floor((Math.max(a[0], b[0], c[0]) - origin[0]) / cell);
+    let z0 = Math.floor((Math.min(a[2], b[2], c[2]) - origin[2]) / cell);
+    let z1 = Math.floor((Math.max(a[2], b[2], c[2]) - origin[2]) / cell);
+    if (bounds) {
+      if (x1 < bounds.x0 || x0 > bounds.x1 || z1 < bounds.z0 || z0 > bounds.z1)
+        continue; // triangle's footprint cannot touch a bounded column
+      x0 = Math.max(x0, bounds.x0);
+      x1 = Math.min(x1, bounds.x1);
+      z0 = Math.max(z0, bounds.z0);
+      z1 = Math.min(z1, bounds.z1);
+    }
+
+    for (let z = z0; z <= z1; z += 1) {
+      for (let x = x0; x <= x1; x += 1) {
+        const px = origin[0] + (x + 0.5) * cell;
+        const pz = origin[2] + (z + 0.5) * cell;
+        const height = heightAt(a, b, c, px, pz);
+        if (height === undefined) continue;
+        const key = columnKey(x, z);
+        const list = surfaces.get(key) ?? [];
+        // Merge with an existing surface within one cell height, so a floor of
+        // many triangles becomes one span instead of dozens stacked up.
+        const existing = list.find(
+          (entry) => Math.abs(entry.y - height) <= settings.cellHeight,
+        );
+        if (existing) {
+          if (height > existing.y) existing.y = height;
+          continue;
+        }
+        list.push({ y: height, area });
+        surfaces.set(key, list);
+      }
+    }
+  }
+  return surfaces;
+}
+
+/** Turns rasterized surfaces into spans and their owning columns. Span
+ * `index` values are local (0-based, insertion order) — callers that splice
+ * into a larger mesh must remap them. */
+function buildSpansFromSurfaces(
+  surfaces: ReadonlyMap<number, { y: number; area: number }[]>,
+): { spans: NavSpan[]; columns: Map<number, Column> } {
+  const spans: NavSpan[] = [];
+  const columns = new Map<number, Column>();
+  for (const [key, list] of surfaces) {
+    const [x, z] = unpackColumnKey(key);
+    const column: Column = { spans: [] };
+    for (const entry of [...list].sort((left, right) => left.y - right.y)) {
+      const span: NavSpan = {
+        index: spans.length,
+        x,
+        z,
+        y: entry.y,
+        area: entry.area,
+        links: [],
+      };
+      spans.push(span);
+      column.spans.push(span);
+    }
+    columns.set(key, column);
+  }
+  return { spans, columns };
+}
+
+/** Step 3 of {@link bakeNavMesh}: connect spans in neighbouring columns whose
+ * height an agent can step over. Mutates `span.links` in place. Only links
+ * within `columns` are added — a caller splicing a subset of a larger mesh
+ * must separately stitch links to spans outside that set. */
+function linkSpans(
+  spans: readonly NavSpan[],
+  columns: ReadonlyMap<number, Column>,
+  agentMaxClimb: number,
+): void {
+  for (const span of spans) {
+    for (const [dx, dz] of NEIGHBOUR_OFFSETS) {
+      for (const other of columns.get(columnKey(span.x + dx, span.z + dz))
+        ?.spans ?? []) {
+        if (Math.abs(other.y - span.y) > agentMaxClimb) continue;
+        span.links.push(other.index);
+      }
+    }
+  }
+}
+
 function distance(a: readonly number[], b: readonly number[]): number {
   return Math.hypot(
     (a[0] ?? 0) - (b[0] ?? 0),
@@ -630,87 +1025,15 @@ export function bakeNavMesh(
     minZ = Math.min(minZ, input.positions[index * 3 + 2]!);
   }
   const origin: [number, number, number] = [minX, 0, minZ];
-  const cosLimit = Math.cos((resolved.maxSlopeDegrees * Math.PI) / 180);
 
-  // Step 1 and 2: rasterize, keeping a merged set of surface heights per column.
-  const surfaces = new Map<number, { y: number; area: number }[]>();
-  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
-    const a = corner(input, triangle, 0);
-    const b = corner(input, triangle, 1);
-    const c = corner(input, triangle, 2);
-    const normal = cross(subtract(b, a), subtract(c, a));
-    const length = Math.hypot(normal[0], normal[1], normal[2]);
-    if (length < 1e-12) continue;
-    if (normal[1] / length < cosLimit) continue; // too steep to stand on
-    const area = input.areas?.[triangle] ?? DEFAULT_AREA.id;
-
-    const cell = resolved.cellSize;
-    const x0 = Math.floor((Math.min(a[0], b[0], c[0]) - origin[0]) / cell);
-    const x1 = Math.floor((Math.max(a[0], b[0], c[0]) - origin[0]) / cell);
-    const z0 = Math.floor((Math.min(a[2], b[2], c[2]) - origin[2]) / cell);
-    const z1 = Math.floor((Math.max(a[2], b[2], c[2]) - origin[2]) / cell);
-
-    for (let z = z0; z <= z1; z += 1) {
-      for (let x = x0; x <= x1; x += 1) {
-        const px = origin[0] + (x + 0.5) * cell;
-        const pz = origin[2] + (z + 0.5) * cell;
-        const height = heightAt(a, b, c, px, pz);
-        if (height === undefined) continue;
-        const key = columnKey(x, z);
-        const list = surfaces.get(key) ?? [];
-        // Merge with an existing surface within one cell height, so a floor of
-        // many triangles becomes one span instead of dozens stacked up.
-        const existing = list.find(
-          (entry) => Math.abs(entry.y - height) <= resolved.cellHeight,
-        );
-        if (existing) {
-          if (height > existing.y) existing.y = height;
-          continue;
-        }
-        list.push({ y: height, area });
-        surfaces.set(key, list);
-      }
-    }
-  }
+  // Steps 1 and 2: rasterize, keeping a merged set of surface heights per column.
+  const surfaces = rasterizeSurfaces(input, resolved, origin);
 
   // Build spans.
-  const spans: NavSpan[] = [];
-  const columns = new Map<number, Column>();
-  for (const [key, list] of surfaces) {
-    const x = ((key >> 16) << 16) >> 16;
-    const z = (key << 16) >> 16;
-    const column: Column = { spans: [] };
-    for (const entry of list.sort((left, right) => left.y - right.y)) {
-      const span: NavSpan = {
-        index: spans.length,
-        x,
-        z,
-        y: entry.y,
-        area: entry.area,
-        links: [],
-      };
-      spans.push(span);
-      column.spans.push(span);
-    }
-    columns.set(key, column);
-  }
+  const { spans, columns } = buildSpansFromSurfaces(surfaces);
 
   // Step 3: connect neighbours an agent can step between.
-  const neighbourOffsets: readonly (readonly [number, number])[] = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-  for (const span of spans) {
-    for (const [dx, dz] of neighbourOffsets) {
-      for (const other of columns.get(columnKey(span.x + dx, span.z + dz))
-        ?.spans ?? []) {
-        if (Math.abs(other.y - span.y) > resolved.agentMaxClimb) continue;
-        span.links.push(other.index);
-      }
-    }
-  }
+  linkSpans(spans, columns, resolved.agentMaxClimb);
 
   // Step 4: erode by the agent radius. A span whose column is within `radius`
   // of a column with no walkable surface is too close to an edge to stand on.

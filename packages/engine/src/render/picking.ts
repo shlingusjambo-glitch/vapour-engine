@@ -148,7 +148,11 @@ function intersectBox(
   return Math.max(entry, 0);
 }
 
-function invertAffine(matrix: readonly number[]): number[] | undefined {
+/** Inverts a column-major affine (rotation, scale, translation) matrix, or
+ * returns undefined when it is singular. */
+export function invertAffine(
+  matrix: ArrayLike<number>,
+): number[] | undefined {
   const a = matrix[0]!,
     b = matrix[1]!,
     c = matrix[2]!;

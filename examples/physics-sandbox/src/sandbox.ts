@@ -19,8 +19,9 @@
  */
 import {
   DEFAULT_GRAB_OPTIONS, Diagnostics, GrabController, InputActions, PhysicsDoor,
-  addJointCommand, hingeJoint, holdPointInFront, throwImpulse,
-  type ActionMapDefinition, type BodyPose, type PhysicsCommand3d, type Vec3Tuple,
+  addJointCommand, drawColliderDebug3d, hingeJoint, holdPointInFront, throwImpulse,
+  type ActionMapDefinition, type BodyPose, type DebugDraw, type PhysicsCommand3d,
+  type PhysicsDebugBody3d, type Vec3Tuple,
 } from "@vapour/engine";
 import { box, meshStats, signedVolume } from "@vapour/assetgen";
 
@@ -166,6 +167,15 @@ export const SANDBOX_ACTIONS: ActionMapDefinition = {
     { name: "Spawn", kind: "button", bindings: [{ device: "keyboard", code: "KeyQ" }] },
     { name: "ToggleDoor", kind: "button", bindings: [{ device: "keyboard", code: "KeyR" }] },
   ],
+};
+
+/** Fixture half-extents for {@link PhysicsSandbox.debugDraw}, matching how
+ * `#build` actually sizes the ground, door, and pendulum bodies. */
+const SANDBOX_HALF_EXTENTS: Record<SandboxBody["kind"], readonly [number, number, number]> = {
+  ground: [10, 0.1, 10],
+  prop: [0.5, 0.5, 0.5],
+  door: [0.5, 1, 0.05],
+  pendulum: [0.15, 0.15, 0.15],
 };
 
 export interface SandboxOptions {
@@ -321,6 +331,26 @@ export class PhysicsSandbox {
       thrown: this.#thrown,
       grabsBroken: this.#grabsBroken,
     };
+  }
+
+  /** Debug-draws every body's collider through `@vapour/engine`'s physics
+   * debug module — a wireframe box per body, tinted by body type, so the
+   * sandbox proves that module's public API works end to end and not only
+   * against synthetic fixtures. Half-extents here are the sandbox's own
+   * fixture sizes (see `#build`), since `SimpleWorld` does not model real
+   * collider shapes. */
+  debugDraw(draw: DebugDraw): void {
+    for (const body of this.world.bodies) {
+      const debugBody: PhysicsDebugBody3d = {
+        id: body.id,
+        bodyType: body.isStatic ? "static" : "dynamic",
+        rotation: [0, 0, 0, 1],
+        position: body.position,
+        sleeping: false,
+        shape: { type: "box", halfExtents: SANDBOX_HALF_EXTENTS[body.kind] },
+      };
+      drawColliderDebug3d(draw, debugBody);
+    }
   }
 
   /** Collision generated from the prop's mesh, proving the asset path works. */

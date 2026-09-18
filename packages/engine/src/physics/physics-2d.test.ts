@@ -33,6 +33,20 @@ describe("PhysicsWorld2dBridge", () => {
     expect(() => world.raycast([0, 0], [Number.NaN, 0], 1)).toThrow("2 finite numbers");
   });
 
+  it("batches materials and combine rules", () => {
+    const wasm = fake(), world = new PhysicsWorld2dBridge(wasm);
+    world.defineMaterial({ name: "ice", friction: 0.02, restitution: 0, frictionCombine: "min" });
+    world.insert({ id: 1, bodyType: "dynamic", position: [0, 2], shape: { type: "circle", radius: 0.5 }, material: "ice", restitutionCombine: "max" });
+    world.setMaterial(1, "ice");
+    world.flush();
+    expect(wasm.batches[0]).toEqual([
+      { type: "defineMaterial", material: { name: "ice", friction: 0.02, restitution: 0, frictionCombine: "min", restitutionCombine: "average" } },
+      expect.objectContaining({ type: "insert", descriptor: expect.objectContaining({ material: "ice", frictionCombine: "average", restitutionCombine: "max" }) }),
+      { type: "setMaterial", id: 1, name: "ice" },
+    ]);
+    expect(() => world.setMaterial(1, " ")).toThrow("cannot be empty");
+  });
+
   it("loads the shared WASM module", async () => {
     const instance = fake(), initialize = vi.fn(async () => undefined);
     const world = await createPhysicsWorld2d({ gravity: [0, -1], moduleUrl: "/runtime.js", loadModule: async () => ({ default: initialize, PhysicsEngine2d: class { constructor(x: number, y: number) { expect([x, y]).toEqual([0, -1]); return instance; } } as any }) });

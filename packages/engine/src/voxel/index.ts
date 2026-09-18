@@ -7,3 +7,5 @@ export * from "./voxel-world.js";
 export * from "./voxel-generation.js";
 export * from "./voxel-block-registry.js";
 export * from "./voxel-mesher.js";
+export * from "./voxel-lighting.js";
+export * from "./voxel-save.js";

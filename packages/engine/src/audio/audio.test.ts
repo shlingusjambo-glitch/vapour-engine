@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AudioEngine, dopplerRatio } from "./audio.js";
 
 class Param {
@@ -168,6 +168,16 @@ describe("AudioEngine", () => {
     expect(context.sources[0]!.playbackRate.value).toBeGreaterThan(1);
     voice.setPitch(2);
     expect(context.sources[0]!.playbackRate.value).toBeGreaterThan(approaching);
+  });
+
+  it("supports legacy method-based Firefox listeners", () => {
+    const context = fakeContext();
+    const setPosition = vi.fn(), setOrientation = vi.fn();
+    Object.assign(context, { listener: { setPosition, setOrientation } });
+    const audio = new AudioEngine(context);
+    audio.setListener([1, 2, 3], [0, 0, -1], [0, 1, 0]);
+    expect(setPosition).toHaveBeenCalledWith(1, 2, 3);
+    expect(setOrientation).toHaveBeenCalledWith(0, 0, -1, 0, 1, 0);
   });
 
   it("computes bounded Doppler ratios and supports an explicit off switch", () => {

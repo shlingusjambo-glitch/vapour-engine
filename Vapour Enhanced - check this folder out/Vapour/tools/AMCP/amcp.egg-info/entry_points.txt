@@ -1,0 +1,2 @@
+[console_scripts]
+amcp = amcp.__main__:main

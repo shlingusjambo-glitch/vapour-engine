@@ -28,6 +28,7 @@ import {
   lookAt,
   multiplyMat4,
   orthographic,
+  perspective,
   transformPoint,
   type Mat4,
   type Vec3,
@@ -49,6 +50,24 @@ export interface ShadowCascade {
   readonly center: Vec3;
   /** World units per shadow-map texel. Useful for choosing a depth bias. */
   readonly texelWorldSize: number;
+}
+
+export interface PointShadow {
+  /** World-space position of the light. */
+  readonly position: Vec3;
+  /** The six view-projections for the cube map faces. */
+  readonly views: readonly Mat4[];
+  /** The light's far plane. */
+  readonly far: number;
+}
+
+export interface SpotShadow {
+  /** World-space position of the light. */
+  readonly position: Vec3;
+  /** Light-space view-projection. */
+  readonly viewProjection: Mat4;
+  /** The light's far plane. */
+  readonly far: number;
 }
 
 export interface ShadowSettings {

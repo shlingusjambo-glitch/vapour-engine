@@ -5,3 +5,4 @@
  */
 export * from "./scripting.js";
 export * from "./vapour-script.js";
+export * from "./vs-bindings.js";

@@ -1,4 +1,5 @@
 import { DEBUG_CATEGORIES, DEBUG_COLORS, type DebugDraw } from "../diagnostics/debug-draw.js";
+import type { Nav2D } from "../tilemap/nav-2d.js";
 import type { NavMesh } from "./navmesh.js";
 
 export interface NavDebugOptions {
@@ -37,6 +38,35 @@ export function drawNavMesh(debug: DebugDraw, navmesh: NavMesh, options: NavDebu
     debug.arrow(from, direction, { ...common, color: DEBUG_COLORS.magenta });
     if (options.labels) debug.text(from, link.kind, { ...common, color: DEBUG_COLORS.magenta });
   }
+}
+
+export interface NavDebug2DOptions {
+  /** World size of one cell, matching the tilemap's `tileSize`. */
+  readonly cellSize?: number;
+  readonly bounds: { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number };
+  readonly path?: readonly (readonly [number, number])[];
+}
+
+/** Queues a 2D nav grid into the shared debug-draw buffer, projecting tile
+ * (x, y) onto the (x, z) ground plane at height 0 — the same convention
+ * {@link drawNavMesh} uses, so both can be viewed together. */
+export function drawNav2D(debug: DebugDraw, nav: Nav2D, options: NavDebug2DOptions): void {
+  const cellSize = options.cellSize ?? 1;
+  const half = cellSize * 0.46;
+  const common = { category: DEBUG_CATEGORIES.navigation, depthTest: true } as const;
+  for (let y = options.bounds.y0; y <= options.bounds.y1; y += 1) {
+    for (let x = options.bounds.x0; x <= options.bounds.x1; x += 1) {
+      const cx = (x + 0.5) * cellSize;
+      const cz = (y + 0.5) * cellSize;
+      const walkable = nav.isWalkable(x, y);
+      const color = nav.isDynamicallyBlocked(x, y) ? DEBUG_COLORS.orange : walkable ? DEBUG_COLORS.green : DEBUG_COLORS.red;
+      debug.polyline(
+        [[cx - half, 0, cz - half], [cx + half, 0, cz - half], [cx + half, 0, cz + half], [cx - half, 0, cz + half]],
+        { ...common, close: true, color },
+      );
+    }
+  }
+  if (options.path) drawNavigationPath(debug, options.path.map(([x, y]) => [(x + 0.5) * cellSize, 0.02, (y + 0.5) * cellSize]));
 }
 
 /** Draws an agent route, highlighting start and destination. */

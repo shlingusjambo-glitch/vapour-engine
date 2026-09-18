@@ -1,0 +1,16 @@
+[project]
+name = "amcp"
+version = "0.1.0"
+description = "Art Model Context Protocol — a layered 2D canvas LLMs can paint on (MCP server + CLI)"
+requires-python = ">=3.10"
+dependencies = ["mcp>=2", "pillow", "numpy"]
+
+[project.scripts]
+amcp = "amcp.__main__:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["amcp"]

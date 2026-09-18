@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+sdk_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$sdk_root/cli/node" "$sdk_root/cli/editor-server.mjs" "${1:-5174}" "$sdk_root/editor"

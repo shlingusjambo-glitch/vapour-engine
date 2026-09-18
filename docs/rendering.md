@@ -67,8 +67,8 @@ so undefined presentation contents can never leak into a frame.
   culling orchestration, resource lifetime, and command encoding.
 - Workers: mesh processing, texture transcoding, and future parallel visibility
   extraction when cross-origin isolation is available.
-- GPU: rasterization, material evaluation, lighting, and future compute culling,
-  particles, skinning, and post-processing.
+- GPU: rasterization, material evaluation, lighting, compute frustum culling
+  (see below), skinning, post-processing, and future compute particles.
 
 ## Standard material
 
@@ -203,6 +203,166 @@ view-model cameras which preserve prior colour never overwrite the world sky.
 Environment-map backgrounds, stars/cloud layers, and atmospheric scattering
 remain separate capabilities from this procedural gradient implementation.
 
+## Environment maps and image-based lighting
+
+One environment cubemap lights every layer of a frame. It arrives in one of
+two ways:
+
+```ts
+// Six RGBA8 faces (+X, -X, +Y, -Y, +Z, -Z), each faceSize² texels.
+renderHost.uploadEnvironment({ faceSize: 256, faces, colorSpace: "srgb", intensity: 1 });
+
+// Or capture the submitted frame's procedural sky and light rig.
+renderHost.deriveEnvironmentFromSky(1);
+
+renderHost.clearEnvironment(); // back to the analytic gradient
+```
+
+Both paths end in `EnvironmentGpu::convolve`
+(`crates/vapour-render/src/surface/environment.rs`), which runs
+`ibl_prefilter.wgsl` once per face per mip: a GGX importance-sampled specular
+chain (`prefiltered_mip_count` levels from the full face down to 4×4, mip `i`
+standing for roughness `i / (count - 1)`, so a 128-face map has six levels at
+roughness 0, 0.2, …, 1) and a 32×32 cosine-weighted irradiance cube. Samples
+read the source at a mip chosen by their solid angle, which keeps a bright
+sun disc from turning into fireflies. The split-sum BRDF lookup
+(`ibl_brdf_lut.wgsl`, 128×128) is rendered once at startup. All three are
+`rgba16float`.
+
+The material pass (`standard_pbr.wgsl`) samples them through frame bindings
+5–8 when `ibl_params.x` is set: specular is the prefiltered radiance at
+`roughness * highestMip` times `F0 * lut.x + lut.y`; diffuse is albedo times
+irradiance, scaled by `(1 - F) * (1 - metallic)`; both are multiplied by the
+material's occlusion. Ambient and hemisphere lights in the rig still add on
+top, so a scene can tint its environment. With no environment live, the
+ambient term is the analytic sky gradient it always was, so nothing changes
+for a game that never uploads one.
+
+Uploaded faces are mipmapped on the CPU in linear light (the same
+`mip_chain` textures use). Sky capture renders `procedural_sky.wgsl` into a
+128-face cubemap through `cube_face_ray_basis`, a per-face matrix whose
+rotation maps clip space straight onto the sampling parameterisation, so no
+mirrored-face fixups exist. `cube_face_direction` and `cube_face_uv` are the
+Rust reference for that parameterisation; a test round-trips them against
+the GPU's face-selection rules, and a real-device test convolves a uniform
+grey cubemap and asserts every specular mip and the irradiance read back as
+that grey (the cosine-weighted mean of a constant is the constant), plus the
+BRDF lookup's smooth/rough and head-on/grazing corners.
+
+Capture is an explicit call, not automatic: it costs the six sky faces plus
+`6 × (specularMips + 1)` small passes, so a day/night cycle should recapture
+at a cadence it chooses (every second or two is invisible) rather than every
+frame. The uploaded map is replayed when the device is rebuilt; a sky-derived
+one is not, since it came from a frame the host no longer holds — call
+`deriveEnvironmentFromSky` again after `initialize()` resolves.
+
+The environment is renderer-global rather than per layer today; a view model
+layer shares the world's map. WebGPU device limits are requested at the
+specification's guaranteed defaults (`wgpu::Limits::default()` resolved to
+the adapter's resolution), which every conforming browser provides and which
+include the storage buffers and compute workgroups the skinning, culling, and
+particle paths need.
+
+## Render textures and viewports
+
+A camera layer can render into a texture instead of the surface, and any
+material can sample that texture under the same identifier
+(`crates/vapour-render/src/surface/render_target.rs`).
+
+```ts
+renderHost.createRenderTarget("rt:monitor", { scale: 0.5 });      // follows the surface
+renderHost.createRenderTarget("rt:map", { width: 256, height: 256 }); // fixed
+renderHost.defineMaterial("screen", { textures: { baseColor: "rt:monitor" } });
+
+renderHost.submitLayers([
+  { frame: securityCamera.pack(), target: "rt:monitor" },
+  { frame: world.pack() }, // draws the "screen" material showing the feed
+  {
+    frame: rearView.pack(),
+    clearColor: false,
+    clearDepth: true,
+    viewport: { x: 0.7, y: 0.05, width: 0.25, height: 0.25 },
+  },
+]);
+```
+
+A target is an `rgba16float` colour texture plus its own depth, so a layer
+renders into it with the same HDR pipeline as the surface; materials sample
+it in scene-linear light, which is exactly right for a glowing screen and
+means tone mapping happens once, at presentation. Layers render in
+submission order, so a target drawn by an earlier layer is complete before a
+later layer samples it; a target drawn later shows last frame's image.
+
+**Sizing policy.** `{ scale }` targets follow the presentation surface at
+that fraction and reallocate whenever a resize changes their texel extent
+(rounding up, so 0.5 of an odd width never drops a row); `{ width, height }`
+targets never reallocate. Reallocation rebuilds every material bound to the
+target atomically — the same path a replaced texture takes — so no bind
+group is left holding a freed texture. A real-device test resizes a
+0.5-scale target from 640×480 to 800×600 and checks it became 400×300, and
+that a fixed target keeps the very same texture object.
+
+**Viewports.** `viewport` is a normalized `x, y, width, height` rectangle on
+the layer's destination. It is applied as both viewport and scissor, so a
+clear or a sky stays inside the rectangle, and the layer's projection uses
+the rectangle's aspect, not the surface's. Side-by-side stereo is two layers
+at `{ x: 0, width: 0.5 }` and `{ x: 0.5, width: 0.5 }`.
+
+**Cycles.** A layer cannot sample the target it renders into, directly or
+through other targets rendered the same frame; that would read a texture
+while writing it. Both sides reject it before any GPU work with the chain
+named: `render target 'monitor' is sampled by a layer that renders into it
+(monitor -> monitor); a camera cannot read the texture it writes`. Rust runs
+`detect_render_target_cycle` inside `set_render_layers`; the headless host
+runs the identical `detectRenderTargetCycle` in TypeScript so CI without a
+GPU sees the same error. Shadows and decals belong to the surface: shadow
+maps are rendered from the first layer regardless of destination, and decals
+apply only when the first layer presents to the surface.
+
+## Decals
+
+Decals are box projections onto the depth buffer, drawn in their own pass
+between the material pass and tone mapping (`decal.wgsl`,
+`crates/vapour-render/src/surface/decal.rs`). Each decal is the built-in
+unit cube placed by a world matrix: scale x/y sets the projected size, scale
+z the depth reach. The pass rasterises that box's back faces (so a camera
+inside the volume still covers it), reads the scene depth under each pixel,
+reconstructs the world position through the inverse view-projection, and
+keeps pixels whose position falls inside the box. The atlas region is
+projected along the box's local -Z with +X right and +Y up, and alpha-blended
+onto the HDR target; depth is read, never written, so decals never disturb
+the geometry they sit on.
+
+```ts
+renderHost.uploadTexture("decals:atlas", atlas);
+renderHost.submitDecals(
+  packDecals([
+    {
+      matrix: bulletHoleWorldMatrix, // unit box, scaled 0.2 × 0.2 × 0.1
+      region: [0, 0, 0.5, 0.5],       // atlas cell
+      tint: [1, 1, 1, 1],
+      opacity: 1,
+      angleCutoff: 0.35,              // cosine; fades off glancing surfaces
+      angleSoftness: 0.2,
+      zFade: 0.25,                    // fade at the front/back faces
+    },
+  ]),
+  "decals:atlas",
+);
+```
+
+Per decal, the 28-float record carries the matrix, the atlas region, a
+linear RGBA tint, and `[opacity, angleCutoff, angleSoftness, zFade]`. The
+surface normal for the angle fade is reconstructed from the screen-space
+derivatives of the depth-derived position, so a wall decal does not smear
+down the floor it meets. Omitting the atlas draws tint-only decals. The set
+persists until replaced, applies to the first (world) layer's depth only, and
+is capped at 4096 per frame; every record is validated on both sides of the
+boundary (singular matrices, regions outside [0, 1], opacity outside [0, 1],
+non-finite values). `decalLocalUv` in TypeScript and `decal_local_uv` in
+Rust are the same projection on the CPU — both are tested against the same
+known points — for tools that need to know what a decal covers.
+
 ## Directional shadows
 
 The first world layer renders four cascades into a 2048×2048 `depth32float`
@@ -241,9 +401,36 @@ mesh/material runs. Sorting is object-origin based today, so intersecting
 transparent meshes remain a documented order-independent-transparency limit.
 
 This is an experimental foundation, not the completed production renderer.
-Compressed GPU texture formats, point/spot shadows, image-based lighting,
-weighted/order-independent transparency, deferred paths, GPU-driven visibility,
-and XR multiview are still release-gated work.
+Compressed GPU texture formats, weighted/order-independent transparency, and
+deferred paths are still release-gated work.
+
+## Point and spot shadows
+
+Point and spot lights share one atlas — 12 `depth32float` slots at 512×512,
+rendered with the same shadow pipeline the directional cascades use (it is a
+depth-only pass, indifferent to which view matrix it is fed). A point light
+claims 6 consecutive slots, one per cube face in the order +X, -X, +Y, -Y, +Z,
+-Z (`cube_face_view_matrices` in `crates/vapour-render/src/surface/shadow.rs`);
+a spot light claims 1, projected with its own outer cone angle and range
+(`spot_shadow_matrix`).
+
+Twelve slots is not enough for every light in a busy scene to cast a shadow at
+once, so `assign_shadow_slots` runs every frame and decides who gets one:
+every candidate is scored `intensity / distance_to_camera²`, sorted highest
+first, and packed greedily into the remaining budget. A light that no longer
+fits — not enough consecutive slots left, most often a point light behind a
+wall of spot lights — is skipped entirely for that frame: it still lights the
+scene, just without a shadow, rather than fragmenting slots or evicting a
+light already placed. The assignment is recomputed from scratch every frame,
+so it holds no state and cannot desync from the light rig.
+
+A light's assigned base slot travels with it in an otherwise-unused lane of
+its own GPU record (`GpuLight.cone.z`, see `lighting.rs`) rather than as a
+separate mapping table, so the shader needs no extra indirection: a negative
+value means "no slot, no shadow", and a point light's fragment shader picks
+its face by which axis of the light-to-fragment direction dominates. Only the
+first presentation layer's lights compete for slots, matching the directional
+shadow's existing scope.
 
 ## Capability tiers and failures
 
@@ -301,11 +488,95 @@ into contiguous `DrawBatch` runs. A thousand cubes sharing one material are one
 draw; the same mesh with two materials is two draws. Sorting is stable, so
 entities keep a deterministic order within a batch and frames stay reproducible.
 
+### GPU-driven frustum culling
+
+After batching, every instance also gets a culling record
+(`surface/culling.rs`, `CullInput`): its world bounding sphere — the mesh's
+origin-centred bounding radius (`MeshGpu::bounding_radius`, farthest AABB
+corner) scaled by the model matrix's largest axis — plus its batch index and
+flags. `render` then culls each layer against the frustum planes of the same
+view-projection its uniforms use, before any render pass:
+
+- **GPU path** (`shaders/cull_instances.wgsl`, one thread per instance): a
+  compute pass tests the sphere against the six planes and, on survival,
+  claims a slot in its batch's run of a *compacted* instance buffer with an
+  atomic on the batch's indirect `instance_count`. The material pass draws
+  each batch with `draw_indexed_indirect` from that args buffer, so nothing
+  about visibility crosses back to the CPU.
+- **CPU fallback** (`cull_cpu`): the same test in Rust, writing the same
+  compacted buffer and the same per-batch counts, drawn with explicit
+  instance ranges. The survivor *set* per batch is identical on both paths;
+  only the order inside a batch can differ (atomics on the GPU, submission
+  order on the CPU), which is invisible for opaque geometry.
+
+Blended batches are drawn back-to-front, so they pass through uncompacted in
+their sorted slots with their count preset to the full run. Shadow passes see
+the scene from the light, not the camera, so they keep drawing from the
+uncompacted source buffer.
+
+The compute path needs a non-zero `first_instance` in indirect args, which is
+WebGPU's `indirect-first-instance` feature; `RenderCapabilities::gpu_culling`
+(`gpuCulling` in `capabilities_json`) reports it. `set_gpu_culling(false)`
+forces the fallback, and every frame's statistics say which path ran:
+`FrameStats::gpu_culling` / `RustFrameStats.gpuCulling`, surfaced as
+`RenderStats.culling: "gpu" | "cpu"`. The CPU path also reports
+`culledInstances`; the GPU path compacts on-device without a readback, so it
+reports `null`. `triangles` is the submitted count on both paths.
+
+Verification: `culling::tests::gpu_and_cpu_culling_agree_on_every_batch` and
+`..._on_a_random_scene` (1000 spheres, three seeds, ~32% survive) run the
+compute pass on a real device, read the args and compacted buffers back, and
+assert they match the CPU fallback record for record. They skip with a
+notice only when the machine has no adapter.
+
 The editor keeps a mirrored catalogue in `packages/engine/src/mesh-library.ts`
 for the facts it needs synchronously — dropdown entries, hit-test extents,
 triangle budgets — without a WASM round trip per pointer move. The Rust test
 `catalogue_matches_the_editor_mesh_library` fails if the two tables disagree on
 extents or triangle counts.
+
+## Skinned meshes
+
+A mesh's per-vertex skinning data (up to 4 bone indices and weights) lives in
+`MeshData.skin` — parallel to `vertices`, not fields on `MeshVertex` itself, so
+the overwhelming majority of meshes that are never skinned pay nothing for a
+wider vertex. `crates/vapour-wasm`'s `upload_skinned_mesh` is the entry point;
+it validates one index/weight quartet per vertex and is otherwise identical to
+`upload_mesh`. Every uploaded mesh gets a skin buffer either way — a real
+one, or a zero-filled `SkinVertex::UNSKINNED` one generated at upload time —
+so the pipeline's vertex layout never has to branch between a skinned and a
+static variant; it is bound as a third vertex buffer at locations 13
+(`bone_indices`) and 14 (`bone_weights`), past `MeshVertex` (0-5) and
+`InstanceData` (6-12: the model matrix, base colour, material parameters, and
+the per-instance skin lane). WebGPU guarantees only 16 vertex attributes, and
+all three buffers must fit inside them, which is why the normal matrix is not
+an instance attribute: `normal_matrix_of` in `standard_pbr.wgsl` derives the
+inverse-transpose from the model matrix per vertex instead. A test asserts
+the three layouts stay disjoint and under the limit.
+
+Posed bone matrices are supplied per frame, not per mesh: `set_render_layers`
+takes `bone_offsets` (one float per instance — its base index into the shared
+palette, or negative if it is not skinned) and `bone_matrices` (every skinned
+instance's bones this frame, concatenated, 16 column-major floats each — see
+`pack_bone_palette`). They upload into one fixed-size storage buffer
+(`MAX_BONE_MATRICES` = 4096 bones) bound alongside the frame uniforms, so the
+frame bind group never needs rebuilding as the skinned-instance count
+changes; a submission that would overflow it is rejected rather than
+truncated. On the TypeScript side, `packRenderLayers` concatenates each
+layer's bone palette and rebases its instances' offsets into the shared
+buffer automatically — a game only ever supplies offsets local to its own
+layer. `@vapour/engine`'s `skinningMatrices` (in `src/animation/skinning.ts`)
+already produces the flat, column-major matrix array this expects.
+
+The vertex shader blends up to 4 bone matrices by normalised weight in local
+space, before the instance's model matrix — `skin_vertex_position` in
+`crates/vapour-render/src/mesh.rs` is the exact CPU-side reference for that
+blend, kept in step with `standard_pbr.wgsl`'s `vertex_main` by a matching
+test. A vertex with total weight at or near zero, or an instance with no
+granted bone offset, renders in its authored rest pose. Skinning is applied
+only in the material pass today: shadow casters render skinned meshes in
+their rest pose, a documented limitation until the shadow pipeline's bind
+groups also carry the bone buffer.
 
 ## Material assets and per-instance parameters
 
@@ -320,3 +591,16 @@ The shared material asset supplies texture bindings, base/emission factors, UV
 transform, normal and occlusion strength, sampler policy, and optional atlas
 layout. Material and texture definitions are replayed before meshes when a
 device is rebuilt, preserving dependency order.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import cameraFrustum, cullInstances
+
+export func visible(view_projection, instances):
+    var frustum = cameraFrustum(view_projection)
+    return cullInstances(instances, frustum)
+```

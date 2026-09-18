@@ -2,9 +2,14 @@ import { LIGHT_STRIDE } from "./lights.js";
 import { ENVIRONMENT_STRIDE } from "./environment.js";
 import { CAMERA_STRIDE } from "../core/frame-builder.js";
 import {
+  validateEnvironmentIntensity,
+  validateEnvironmentUpload,
   validateMaterialUpload,
   validateTextureUpload,
+  type EnvironmentUpload,
   type MaterialUpload,
+  type RenderTargetSize,
+  validateRenderTargetSize,
   type MeshUpload,
   type PackedFrame,
   type PostProcessSettings,
@@ -12,7 +17,11 @@ import {
   type RenderStats,
   type TextureUpload,
 } from "./host/index.js";
-import type { RenderLayerSubmission } from "./render-layers.js";
+import {
+  detectRenderTargetCycle,
+  type RenderLayerSubmission,
+} from "./render-layers.js";
+import { DECAL_STRIDE } from "./decals.js";
 
 export interface HeadlessFrameSnapshot {
   readonly drawCalls: number;
@@ -33,10 +42,13 @@ export class HeadlessRenderHost extends EventTarget implements RenderHost {
   readonly #meshes = new Map<string, MeshUpload>();
   readonly #textures = new Map<string, TextureUpload>();
   readonly #materials = new Map<string, MaterialUpload>();
+  readonly #renderTargets = new Map<string, RenderTargetSize>();
   #initialized = false;
   #destroyed = false;
   #lastTime = 0;
   #postProcess: PostProcessSettings = { exposure: 1, toneMapping: "aces" };
+  #environment: EnvironmentUpload | "sky" | undefined;
+  #decalCount = 0;
   #snapshot: HeadlessFrameSnapshot = {
     drawCalls: 0,
     triangles: 0,
@@ -86,10 +98,35 @@ export class HeadlessRenderHost extends EventTarget implements RenderHost {
     return this.#textures.delete(id);
   }
 
+  createRenderTarget(id: string, size: RenderTargetSize): void {
+    this.#requireAlive();
+    validateRenderTargetSize(id, size);
+    if (this.#textures.has(id))
+      throw new Error(`Render target '${id}' collides with an uploaded texture.`);
+    this.#renderTargets.set(id, size);
+  }
+
+  releaseRenderTarget(id: string): boolean {
+    this.#requireAlive();
+    for (const [materialId, material] of this.#materials)
+      if (Object.values(material.textures ?? {}).includes(id))
+        throw new Error(
+          `Render target '${id}' is still used by material '${materialId}'.`,
+        );
+    return this.#renderTargets.delete(id);
+  }
+
+  renderTargetIds(): readonly string[] {
+    return [...this.#renderTargets.keys()];
+  }
+
   defineMaterial(id: string, material: MaterialUpload): void {
     this.#requireAlive();
-    validateMaterialUpload(id, material, (textureId) =>
-      this.#textures.has(textureId),
+    validateMaterialUpload(
+      id,
+      material,
+      (textureId) =>
+        this.#textures.has(textureId) || this.#renderTargets.has(textureId),
     );
     this.#materials.set(id, material);
   }
@@ -97,6 +134,44 @@ export class HeadlessRenderHost extends EventTarget implements RenderHost {
   releaseMaterial(id: string): boolean {
     this.#requireAlive();
     return this.#materials.delete(id);
+  }
+
+  uploadEnvironment(environment: EnvironmentUpload): void {
+    this.#requireAlive();
+    validateEnvironmentUpload(environment);
+    this.#environment = environment;
+  }
+
+  deriveEnvironmentFromSky(intensity = 1): void {
+    this.#requireAlive();
+    validateEnvironmentIntensity(intensity);
+    this.#environment = "sky";
+  }
+
+  clearEnvironment(): void {
+    this.#requireAlive();
+    this.#environment = undefined;
+  }
+
+  submitDecals(decals: Float32Array, atlasTexture?: string): void {
+    this.#requireAlive();
+    if (decals.length % DECAL_STRIDE !== 0)
+      throw new Error(
+        `Decals need ${String(DECAL_STRIDE)} values each; received ${String(decals.length)}.`,
+      );
+    if (atlasTexture !== undefined && !this.#textures.has(atlasTexture))
+      throw new Error(`Decal atlas texture '${atlasTexture}' has not been uploaded.`);
+    this.#decalCount = decals.length / DECAL_STRIDE;
+  }
+
+  decalCount(): number {
+    return this.#decalCount;
+  }
+
+  /** What lights the scene's ambient term: an uploaded map, the captured
+   * sky, or nothing (the analytic gradient). */
+  environment(): EnvironmentUpload | "sky" | undefined {
+    return this.#environment;
   }
 
   setPostProcess(settings: PostProcessSettings): void {
@@ -140,6 +215,21 @@ export class HeadlessRenderHost extends EventTarget implements RenderHost {
     this.#requireReady();
     if (layers.length === 0)
       throw new Error("A render submission needs at least one layer.");
+    for (const [index, layer] of layers.entries())
+      if (layer.target !== undefined && !this.#renderTargets.has(layer.target))
+        throw new Error(
+          `Render layer ${String(index)} renders into '${layer.target}', which is not a render target.`,
+        );
+    detectRenderTargetCycle(
+      layers.map((layer) => ({
+        target: layer.target,
+        samples: layer.frame.materialTable.flatMap((materialId) =>
+          Object.values(this.#materials.get(materialId)?.textures ?? {}).filter(
+            (textureId) => this.#renderTargets.has(textureId),
+          ),
+        ),
+      })),
+    );
     this.#snapshot = this.#measureFrames(layers.map((layer) => layer.frame));
   }
 
@@ -194,6 +284,7 @@ export class HeadlessRenderHost extends EventTarget implements RenderHost {
       cpuEncodeMs: 0,
       drawCalls: this.#snapshot.drawCalls,
       triangles: this.#snapshot.triangles,
+      culling: "cpu",
     };
   }
 

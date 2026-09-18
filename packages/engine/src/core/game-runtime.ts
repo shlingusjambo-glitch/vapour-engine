@@ -76,6 +76,9 @@ export interface GameHooks {
   update?(game: GameContext, deltaSeconds: number): void;
   /** Runs after every script's update and before the frame is submitted. */
   lateUpdate?(game: GameContext, deltaSeconds: number): void;
+  /** Runs immediately after the GPU frame is submitted. Canvas capture and
+   * frame-dependent telemetry belong here, while the presented image is live. */
+  afterRender?(game: GameContext, stats: RenderStats): void;
   /** Runs when the loop stops, including on error. Release resources here. */
   stop?(game: GameContext): void;
 }
@@ -336,7 +339,12 @@ export class GameRuntime extends EventTarget {
       { frame: this.#frame.pack(), clearColor: true, clearDepth: true },
       { frame: this.#overlay.pack(), clearColor: false, clearDepth: false },
     ]);
-    this.#stats = this.#host.renderFrame(nowMilliseconds);
+    const rendered = this.#host.renderFrame(nowMilliseconds);
+    this.#stats = rendered;
+    if (rendered !== undefined) {
+      this.#hooks.afterRender?.(context, rendered);
+      for (const [id, script] of this.#orderedScripts()) this.#invokeScriptSync(id, "afterRender", () => script.module.afterRender?.(context, rendered));
+    }
     this.#frameIndex += 1;
   }
 

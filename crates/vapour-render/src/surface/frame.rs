@@ -3,7 +3,12 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
-use super::{lighting::*, material::*, shadow::SHADOW_CASCADE_COUNT, view::*};
+use super::{
+    lighting::*,
+    material::*,
+    shadow::{MAX_SHADOW_SLOTS, SHADOW_CASCADE_COUNT},
+    view::*,
+};
 
 /// A frame submitted as packed arrays.
 ///
@@ -40,6 +45,11 @@ pub const RENDER_LAYER_CLEAR_DEPTH: u32 = 2;
 pub const RENDER_LAYER_HAS_CAMERA: u32 = 4;
 pub const RENDER_LAYER_HAS_LIGHT: u32 = 8;
 pub const RENDER_LAYER_HAS_ENVIRONMENT: u32 = 16;
+/// The layer supplies its own projection matrix (`RenderLayers::projections`)
+/// instead of the symmetric perspective its camera record describes — an XR
+/// eye's asymmetric frustum, for instance. The camera record's field of
+/// view, near, and far still describe the frustum for shadow cascades.
+pub const RENDER_LAYER_HAS_PROJECTION: u32 = 32;
 
 /// Several camera layers packed into one atomic surface submission. Instance
 /// arrays are concatenated in layer order; `layer_instance_counts` partitions
@@ -65,7 +75,30 @@ pub struct RenderLayers<'a> {
     pub layer_light_counts: &'a [u32],
     /// Exactly `ENVIRONMENT_STRIDE` values per layer; ignored unless HAS_ENVIRONMENT is set.
     pub environments: &'a [f32],
+    /// One entry per instance: that instance's offset into `bone_matrices`,
+    /// or a negative value if it is not skinned. Empty means no instance in
+    /// this submission is skinned.
+    pub bone_offsets: &'a [f32],
+    /// Every skinned instance's bone palette this frame, concatenated: 16
+    /// column-major floats per bone, back to back (see
+    /// `crate::mesh::pack_bone_palette`). Indexed by `bone_offsets`.
+    pub bone_matrices: &'a [f32],
+    /// One entry per layer naming the render target it draws into, or an
+    /// empty string for the presentation surface. Empty means every layer
+    /// presents to the surface.
+    pub layer_targets: &'a [String],
+    /// Four values per layer — `x, y, width, height` as fractions of the
+    /// destination in [0, 1] — or empty for full-destination layers. The
+    /// viewport and scissor are set together, so a layer never draws outside
+    /// its rectangle even with a sky or clear.
+    pub viewports: &'a [f32],
+    /// Sixteen column-major floats per layer, or empty; a layer's matrix is
+    /// used only when its flags carry `RENDER_LAYER_HAS_PROJECTION`.
+    pub projections: &'a [f32],
 }
+
+/// The whole destination.
+pub(crate) const FULL_VIEWPORT: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// One instance on its way to the GPU, before sorting and packing.
 #[derive(Debug, Clone, Copy)]
@@ -76,6 +109,9 @@ pub(crate) struct InstanceSubmission {
     pub(crate) model: Mat4,
     pub(crate) base_color: [f32; 4],
     pub(crate) material_params: [f32; 4],
+    /// Index of this instance's first bone in the frame's bone palette, or
+    /// -1 if it is not skinned.
+    pub(crate) bone_offset: f32,
 }
 
 /// A contiguous run of instances that share a mesh, so they draw in one call.
@@ -94,14 +130,24 @@ pub(crate) struct LayerSubmission {
     pub(crate) clear_color: bool,
     pub(crate) clear_depth: bool,
     pub(crate) instances: Vec<InstanceSubmission>,
+    /// Render target identifier, or `None` for the surface.
+    pub(crate) target: Option<String>,
+    pub(crate) viewport: [f32; 4],
 }
 
 pub(crate) struct RenderLayerState {
+    /// Where this layer's instances and batches start in the frame-wide
+    /// arrays (every layer's are concatenated in order).
+    pub(crate) first_instance: u32,
+    pub(crate) instance_count: u32,
+    pub(crate) first_batch: u32,
     pub(crate) view: ViewState,
     pub(crate) default_view: bool,
     pub(crate) clear_color: bool,
     pub(crate) clear_depth: bool,
     pub(crate) batches: Vec<DrawBatch>,
+    pub(crate) target: Option<String>,
+    pub(crate) viewport: [f32; 4],
 }
 
 #[repr(C)]
@@ -125,6 +171,16 @@ pub(crate) struct FrameUniforms {
     pub(crate) shadow_splits: [f32; SHADOW_CASCADE_COUNT],
     /// cascade count, map size, constant bias, reserved
     pub(crate) shadow_params: [f32; 4],
+    /// One view-projection matrix per point/spot atlas slot. A point light
+    /// occupies 6 consecutive slots (its cube faces); a spot light occupies
+    /// one. A light's `cone.z` (see `GpuLight`) carries its base slot, or -1 if
+    /// it was not granted one this frame — see `assign_shadow_slots`.
+    pub(crate) point_spot_matrices: [[[f32; 4]; 4]; MAX_SHADOW_SLOTS],
+    /// slots in use, atlas face size, constant bias, reserved
+    pub(crate) point_spot_params: [f32; 4],
+    /// Image-based lighting: [environment live, highest prefiltered mip,
+    /// intensity, reserved]. See `EnvironmentGpu::params`.
+    pub(crate) ibl_params: [f32; 4],
 }
 
 pub(crate) struct FrameGpu {
@@ -133,26 +189,28 @@ pub(crate) struct FrameGpu {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub(crate) struct InstanceData {
+    /// The normal matrix is derived from this in the vertex shader rather
+    /// than shipped: WebGPU guarantees only 16 vertex attributes, and the
+    /// mesh, instance, and skin buffers together must fit that budget.
     pub(crate) model: [[f32; 4]; 4],
-    pub(crate) normal_matrix: [[f32; 4]; 4],
     pub(crate) base_color: [f32; 4],
     pub(crate) material_params: [f32; 4],
+    /// x: this instance's bone-palette offset, or -1 if unskinned. yzw
+    /// reserved.
+    pub(crate) skin: [f32; 4],
 }
 
 impl InstanceData {
-    pub(crate) const ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
+    pub(crate) const ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
         6 => Float32x4,
         7 => Float32x4,
         8 => Float32x4,
         9 => Float32x4,
         10 => Float32x4,
         11 => Float32x4,
-        12 => Float32x4,
-        13 => Float32x4,
-        14 => Float32x4,
-        15 => Float32x4
+        12 => Float32x4
     ];
 
     pub(crate) fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -167,8 +225,14 @@ impl InstanceData {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameStats {
     pub draw_calls: u32,
+    /// Triangles submitted, before culling.
     pub triangles: u32,
     pub cpu_encode_ms: f32,
+    /// Whether this frame's frustum culling ran as a compute pass.
+    pub gpu_culling: bool,
+    /// Instances the CPU fallback dropped; `None` on the GPU path, which
+    /// compacts on-device without a readback.
+    pub culled_instances: Option<u32>,
 }
 
 pub(crate) fn sort_submissions(submission: &mut [InstanceSubmission], camera: Vec3) {

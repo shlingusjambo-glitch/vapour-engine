@@ -280,3 +280,17 @@ masked layer for the body's locomotion and drive the arms with `solveTwoBoneIk`
 toward the tracked controller positions, with `solveLookAt` on the head. Clamp
 the look-at, or a player turning their head produces an avatar that looks
 broken to everyone else.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import samplePose, blendPoses
+
+export func crossfade(walk, run, time, weight):
+    var a = samplePose(walk, time)
+    var b = samplePose(run, time)
+    return blendPoses(a, b, weight)
+```

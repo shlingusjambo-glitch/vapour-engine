@@ -15,8 +15,8 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use vapour_render::{
     AntiAliasing, DebugView, GpuContext, GpuRequest, PostProcessSettings, RenderFrame,
-    RenderLayers, RenderWorld, StandardMaterialDescriptor, SurfaceRenderer, ToneMapping,
-    build_mesh_with_attributes,
+    RenderLayers, RenderTargetSize, RenderWorld, SkinVertex, StandardMaterialDescriptor,
+    SurfaceRenderer, ToneMapping, build_mesh_with_attributes,
 };
 #[cfg(target_arch = "wasm32")]
 use web_sys::HtmlCanvasElement;
@@ -734,6 +734,10 @@ struct BrowserFrameStats {
     draw_calls: u32,
     triangles: u32,
     cpu_encode_ms: f32,
+    /// Whether frustum culling ran as a compute pass this frame.
+    gpu_culling: bool,
+    /// Instances the CPU fallback dropped; `null` on the GPU path.
+    culled_instances: Option<u32>,
 }
 
 /// Rust-owned WebGPU renderer exported to the browser. TypeScript supplies the
@@ -857,6 +861,8 @@ impl WebGpuRenderer {
             draw_calls: stats.draw_calls,
             triangles: stats.triangles,
             cpu_encode_ms: stats.cpu_encode_ms,
+            gpu_culling: stats.gpu_culling,
+            culled_instances: stats.culled_instances,
         })
         .map_err(|error| JsError::new(&format!("failed to serialize render statistics: {error}")))
     }
@@ -921,11 +927,22 @@ impl WebGpuRenderer {
         lights: &[f32],
         layer_light_counts: &[u32],
         environments: &[f32],
+        bone_offsets: &[f32],
+        bone_matrices: &[f32],
+        layer_targets_json: &str,
+        viewports: &[f32],
+        projections: &[f32],
     ) -> Result<(), JsError> {
         let mesh_table: Vec<String> = serde_json::from_str(mesh_table_json)
             .map_err(|error| JsError::new(&format!("invalid mesh table: {error}")))?;
         let material_table: Vec<String> = serde_json::from_str(material_table_json)
             .map_err(|error| JsError::new(&format!("invalid material table: {error}")))?;
+        let layer_targets: Vec<String> = if layer_targets_json.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(layer_targets_json)
+                .map_err(|error| JsError::new(&format!("invalid layer targets: {error}")))?
+        };
         self.inner
             .set_render_layers(RenderLayers {
                 mesh_table: &mesh_table,
@@ -941,7 +958,38 @@ impl WebGpuRenderer {
                 lights,
                 layer_light_counts,
                 environments,
+                bone_offsets,
+                bone_matrices,
+                layer_targets: &layer_targets,
+                viewports,
+                projections,
             })
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Creates or resizes a render-to-texture target. A positive `scale`
+    /// makes it follow the surface at that fraction (reallocating on
+    /// resize); otherwise `width`/`height` fix its size.
+    pub fn create_render_target(
+        &mut self,
+        id: &str,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<(), JsError> {
+        let size = if scale > 0.0 {
+            RenderTargetSize::SurfaceScaled(scale)
+        } else {
+            RenderTargetSize::Fixed { width, height }
+        };
+        self.inner
+            .create_render_target(id, size)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    pub fn release_render_target(&mut self, id: &str) -> Result<bool, JsError> {
+        self.inner
+            .release_render_target(id)
             .map_err(|error| JsError::new(&error.to_string()))
     }
 
@@ -975,6 +1023,60 @@ impl WebGpuRenderer {
             indices,
         )
         .map_err(|error| JsError::new(&format!("mesh '{id}' was rejected: {error}")))?;
+        self.inner
+            .upload_mesh(id, &data)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Uploads or replaces a skinned runtime mesh: identical to `upload_mesh`
+    /// plus one bone index and one bone weight quartet per vertex (flat, 4
+    /// values each, in vertex order) — the layout `@vapour/engine`'s
+    /// `skinningMatrices` bone palette is meant to drive per-instance via
+    /// `set_render_layers`'s `bone_offsets`/`bone_matrices`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upload_skinned_mesh(
+        &mut self,
+        id: &str,
+        positions: &[f32],
+        normals: &[f32],
+        uvs: &[f32],
+        colors: &[f32],
+        tangents: &[f32],
+        texture_layers: &[f32],
+        indices: &[u32],
+        bone_indices: &[u32],
+        bone_weights: &[f32],
+    ) -> Result<(), JsError> {
+        let mut data = build_mesh_with_attributes(
+            positions,
+            normals,
+            uvs,
+            colors,
+            tangents,
+            texture_layers,
+            indices,
+        )
+        .map_err(|error| JsError::new(&format!("mesh '{id}' was rejected: {error}")))?;
+        let vertex_count = data.vertices.len();
+        if bone_indices.len() != vertex_count * 4 || bone_weights.len() != vertex_count * 4 {
+            return Err(JsError::new(&format!(
+                "skinned mesh '{id}' needs {} bone indices and {} bone weights (4 per vertex for {vertex_count} vertices), got {} and {}",
+                vertex_count * 4,
+                vertex_count * 4,
+                bone_indices.len(),
+                bone_weights.len()
+            )));
+        }
+        data.skin = Some(
+            bone_indices
+                .chunks_exact(4)
+                .zip(bone_weights.chunks_exact(4))
+                .map(|(indices, weights)| SkinVertex {
+                    bone_indices: [indices[0], indices[1], indices[2], indices[3]],
+                    bone_weights: [weights[0], weights[1], weights[2], weights[3]],
+                })
+                .collect(),
+        );
         self.inner
             .upload_mesh(id, &data)
             .map_err(|error| JsError::new(&error.to_string()))
@@ -1028,6 +1130,113 @@ impl WebGpuRenderer {
         self.inner
             .release_material(id)
             .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Replaces the environment map used for image-based lighting with six
+    /// RGBA8 faces (+X, -X, +Y, -Y, +Z, -Z), each `face_size²` texels.
+    pub fn upload_environment_cubemap(
+        &mut self,
+        face_size: u32,
+        faces: &[u8],
+        srgb: bool,
+        intensity: f32,
+    ) -> Result<(), JsError> {
+        self.inner
+            .upload_environment_cubemap(face_size, faces, srgb, intensity)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Captures the submitted frame's procedural sky into the environment
+    /// map. Explicit and not per-frame: see `SurfaceRenderer::set_environment_from_sky`.
+    pub fn set_environment_from_sky(&mut self, intensity: f32) -> Result<(), JsError> {
+        self.inner
+            .set_environment_from_sky(intensity)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Replaces the frame's decals: `DECAL_STRIDE` (28) floats per decal.
+    /// An empty `atlas_texture_id` means tint-only decals.
+    pub fn set_decals(&mut self, atlas_texture_id: &str, decals: &[f32]) -> Result<(), JsError> {
+        let atlas = (!atlas_texture_id.is_empty()).then_some(atlas_texture_id);
+        self.inner
+            .set_decals(atlas, decals)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    pub fn clear_environment(&mut self) {
+        self.inner.clear_environment();
+    }
+
+    /// Prefers compute frustum culling (the default) or forces the CPU
+    /// fallback; the frame statistics report which path actually ran.
+    pub fn set_gpu_culling(&mut self, enabled: bool) {
+        self.inner.set_gpu_culling(enabled);
+    }
+
+    /// Whether particle systems created from now on simulate on the GPU
+    /// (the default) or with the CPU fallback; existing systems keep their
+    /// path. `particle_system_stats_json` reports which one a system uses.
+    pub fn set_gpu_particles(&mut self, enabled: bool) {
+        self.inner.set_gpu_particles(enabled);
+    }
+
+    /// Creates (or replaces) a particle system from a JSON
+    /// `ParticleSystemDescriptor`.
+    pub fn create_particle_system(
+        &mut self,
+        id: &str,
+        descriptor_json: &str,
+    ) -> Result<(), JsError> {
+        let descriptor: vapour_render::ParticleSystemDescriptor =
+            serde_json::from_str(descriptor_json).map_err(|error| {
+                JsError::new(&format!("invalid particle system descriptor: {error}"))
+            })?;
+        self.inner
+            .create_particle_system(id, descriptor)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Spawns `spawn` particles at the origin and advances the system by
+    /// `dt` seconds.
+    pub fn update_particle_system(
+        &mut self,
+        id: &str,
+        dt: f32,
+        spawn: u32,
+        origin_x: f32,
+        origin_y: f32,
+        origin_z: f32,
+    ) -> Result<(), JsError> {
+        self.inner
+            .update_particle_system(id, dt, spawn, [origin_x, origin_y, origin_z])
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    pub fn clear_particle_system(&mut self, id: &str) -> Result<(), JsError> {
+        self.inner
+            .clear_particle_system(id)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    pub fn release_particle_system(&mut self, id: &str) -> bool {
+        self.inner.release_particle_system(id)
+    }
+
+    /// `ParticleSystemStats` as JSON: `gpu`, `requested`, and — exact on the
+    /// CPU path, `null` on the GPU path — `alive`, `emitted`, `expired`,
+    /// `dropped`.
+    pub fn particle_system_stats_json(&self, id: &str) -> Result<String, JsError> {
+        let stats = self
+            .inner
+            .particle_system_stats(id)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        serde_json::to_string(&stats).map_err(|error| {
+            JsError::new(&format!("failed to serialize particle statistics: {error}"))
+        })
+    }
+
+    pub fn environment_live(&self) -> bool {
+        self.inner.environment_live()
     }
 
     pub fn capabilities_json(&self) -> Result<String, JsError> {

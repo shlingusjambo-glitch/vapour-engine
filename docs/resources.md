@@ -185,3 +185,18 @@ bundle definitions drive both sides without loading render assets headlessly.
 XR sessions are especially sensitive to hitching, so prefer `preload` and
 bundles over first-use loading: a load that stalls a frame is a comfort problem
 in VR, not just a visual one.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import ResourceManager
+
+var resources = new ResourceManager()
+
+export async func load_level(id):
+    var handle = await resources.load("scene", id)
+    return handle
+```

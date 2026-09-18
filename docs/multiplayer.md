@@ -185,3 +185,18 @@ proven correct before a binary format goes underneath. Encoding is isolated to
 Not yet implemented: lag compensation (rewinding the server to a client's view
 for hit detection), matchmaking and lobbies, host migration, and a WebSocket or
 WebRTC transport. `docs/status.md` records exactly what is and is not there.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/net" import NetworkServer, LoopbackNetwork
+
+export func host(auth):
+    var network = new LoopbackNetwork()
+    var server = new NetworkServer(network.endpoint(0), { tickRate: 20, authenticate: auth, reconnectGraceTicks: 60, lagCompensation: True })
+    server.spawn("player", { p: [0, 0, 0], hp: 100 })
+    return server
+```

@@ -91,14 +91,115 @@ definition, and serializable glyph metrics. Upload `textureId`/`texture`, define
 `font.material` with the returned material, then pass `font` to text/UI layout.
 SDF materials use derivative-aware smoothing in the standard WGSL shader.
 
+## 2D lights
+
+`packages/engine/src/render/lighting-2d.ts` is normal-map-free 2D lighting: no
+shaders, no GPU, just the per-pixel (or per-tile) accumulation function a
+sprite/tile renderer multiplies its texel by. A sprite's own surface
+orientation plays no part — that's the simplification a 2D game without
+normal maps implies — but distance (and, for spot lights, angle) still fall
+off correctly.
+
+```ts
+import { accumulateLighting2D, accumulateLightGrid, type Light2D } from "@vapour/engine";
+
+const lights: Light2D[] = [
+  { kind: "point", position: [4, 2], radius: 6, color: [1, 0.8, 0.5], intensity: 1.2 },
+  { kind: "spot", position: [0, 0], radius: 10, direction: 0, coneAngle: Math.PI / 6, intensity: 2 },
+  { kind: "global", color: [0.2, 0.2, 0.3], intensity: 1 }, // ambient, uniform everywhere
+];
+
+accumulateLighting2D(lights, [spriteX, spriteY]); // -> [r, g, b] to multiply the sprite's tint by
+
+// Or bake a whole grid once (static lights, or once per frame for dynamic ones):
+const grid = accumulateLightGrid(lights, { width: 64, height: 64, cellSize: 1 });
+```
+
+`lightAttenuation` exposes the `[0, 1]` distance/angle falloff alone, for
+callers that want to combine colour differently than straight addition.
+
+## Parallax
+
+`TilemapLayer.parallax` (above) scrolls a tile *layer* at a fraction of camera
+speed. `packages/engine/src/tilemap/parallax-2d.ts` generalizes the same idea
+to anything else on screen — a sprite-based background, a sky layer, a
+UI-space vignette — that isn't a `TilemapLayer` and shouldn't need to become
+one just to parallax:
+
+```ts
+import { parallaxOffset, type ParallaxLayer2D } from "@vapour/engine";
+
+const sky: ParallaxLayer2D = { factor: [0.1, 0], wrap: [1024, 0] }; // scrolls slowly, tiles seamlessly
+const drawPosition = parallaxOffset(sky, camera.position);
+```
+
+`factor: [1, 1]` moves with the camera (no parallax); `[0, 0]` pins to the
+screen; `wrap` repeats the result into `[0, size)` per axis for an
+infinitely-tiling backdrop.
+
+## Sprite atlases
+
+`SpriteAsset` (above) already has everything one atlas region needs — a pixel
+`rect`, a normalized `pivot`, nine-slice `border` — it just had no concept of
+a *sheet* of them addressed by name. `packages/engine/src/tilemap/atlas-2d.ts`
+adds exactly that, without changing `SpriteAsset` itself:
+
+```ts
+import { SpriteAtlas, packGridAtlas } from "@vapour/engine";
+
+const atlas = new SpriteAtlas({
+  material: "material:hero",
+  textureSize: [256, 256],
+  regions: [
+    { name: "idle", rect: [0, 0, 32, 32], pivot: [0.5, 0] },
+    { name: "walk_0", rect: [32, 0, 32, 32], pivot: [0.5, 0] },
+  ],
+});
+atlas.region("idle"); // -> a ready-to-draw SpriteAsset, or undefined
+
+// Or pack a regular grid sheet (a walk cycle, a tileset image) in one call:
+const walkCycle = packGridAtlas({
+  material: "material:hero", textureSize: [128, 32],
+  cellSize: [32, 32], columns: 4, rows: 1,
+});
+```
+
+## 2D particles
+
+`packages/engine/src/tilemap/particles-2d.ts` adapts the existing
+`ParticleEmitter` (see `particles.md`) for 2D rather than reimplementing
+particle simulation: `createParticleEmitter2D` configures 2D gravity and
+shapes and returns a `ParticleEmitter2D` that flattens every particle (and
+trail point) back onto z = 0 after each `update()` — undoing the Z drift the
+underlying emitter's 3D shape sampling would otherwise introduce.
+
+```ts
+import { createParticleEmitter2D, planarPositions } from "@vapour/engine";
+
+const sparks = createParticleEmitter2D({
+  shape: { kind: "cone", size: [1, 0], angle: 20 },
+  gravity: [0, -20], // screen-down
+  lifetime: [0.5, 1],
+});
+sparks.play();
+sparks.update(deltaSeconds);
+planarPositions(sparks.buffers()); // -> readonly [x, y][]
+```
+
+## 2D navigation
+
+See `docs/ai-navigation.md` for `Nav2D`, which paths over a `Tilemap`'s own
+collision data using the same budgeted A* and string-pulling every other
+navigation surface in the engine uses.
+
 ## Current limits
 
-The runtime batching, real orthographic GPU projection, camera math, and basic
-scene-authored sprite components are implemented and tested. MSDF importing,
-tilemaps, 2D lighting, 2D physics, and visual sprite import/editing are still
-release gates. Atlas batching and UI composition remain runtime APIs while the
-editor asset loader is unfinished. The editor does not expose controls that
-pretend those unfinished integrations exist.
+The runtime batching, real orthographic GPU projection, camera math, basic
+scene-authored sprite components, tilemaps, and 2D lighting are implemented
+and tested. MSDF importing, 2D physics, and visual sprite import/editing are
+still release gates. Atlas batching and UI composition remain runtime APIs
+while the editor asset loader is unfinished. The editor does not expose
+controls that pretend those unfinished integrations exist.
 
 ---
 
@@ -207,3 +308,18 @@ what a decorative background wants.
 - `visibleTiles` allocates one array per call. Call it once per layer per frame
   and reuse the result across passes.
 - `stats()` scans every tile, so it is for diagnostics rather than per-frame use.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import lightAttenuation
+
+export func lit(lights, point):
+    var total = 0
+    for light in lights:
+        total = total + lightAttenuation(light, point)
+    return total
+```

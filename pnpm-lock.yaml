@@ -149,11 +149,49 @@ importers:
         specifier: ^7.3.6
         version: 7.3.6(@types/node@24.13.3)(tsx@4.23.12)
 
+  examples/open-world:
+    dependencies:
+      '@vapour/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@vapour/math':
+        specifier: workspace:*
+        version: link:../../packages/math
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(supports-color@8.1.1)(tsx@4.23.12)
+
   examples/physics-sandbox:
     dependencies:
       '@vapour/assetgen':
         specifier: workspace:*
         version: link:../../packages/assetgen
+      '@vapour/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@vapour/math':
+        specifier: workspace:*
+        version: link:../../packages/math
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(supports-color@8.1.1)(tsx@4.23.12)
+
+  examples/xr-playground:
+    dependencies:
       '@vapour/engine':
         specifier: workspace:*
         version: link:../../packages/engine

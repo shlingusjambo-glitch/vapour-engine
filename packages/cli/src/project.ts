@@ -51,14 +51,14 @@ export async function loadAndValidateProject(root: string): Promise<ValidationRe
 export async function buildProject(root: string, output = path.join(root, "dist")): Promise<void> {
   const { project } = await loadAndValidateProject(root);
   await mkdir(output, { recursive: true });
-  const engineEntry = await resolveEngineEntry();
+  const aliases = await resolveEngineAliases();
   const buildResult = await esbuild({
     entryPoints: [path.join(root, project.scriptEntry)],
     bundle: true,
     format: "esm",
     platform: "browser",
     target: ["es2023"],
-    alias: { "@vapour/engine": engineEntry },
+    alias: aliases,
     plugins: [vapourScriptPlugin()],
     minify: true,
     treeShaking: true,
@@ -92,14 +92,14 @@ export async function buildProject(root: string, output = path.join(root, "dist"
 async function typeCheckProject(root: string): Promise<void> {
   const scripts = await findFiles(path.join(root, "Scripts"), (file) => file.endsWith(".ts") || file.endsWith(".tsx"));
   if (scripts.length === 0) return;
-  const engineEntry = await resolveEngineEntry();
+  const aliases = await resolveEngineAliases();
   const options: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2023,
     lib: ["lib.es2023.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"],
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     baseUrl: root,
-    paths: { "@vapour/engine": [engineEntry] },
+    paths: Object.fromEntries(Object.entries(aliases).map(([specifier, entry]) => [specifier, [entry]])),
     strict: true,
     noEmit: true,
     noUncheckedIndexedAccess: true,
@@ -119,11 +119,35 @@ async function typeCheckProject(root: string): Promise<void> {
 }
 
 async function resolveEngineEntry(): Promise<string> {
-  const engineEntry = process.env.VAPOUR_ENGINE_SOURCE === undefined
-    ? fileURLToPath(new URL("../../engine/src/index.ts", import.meta.url))
-    : path.resolve(process.env.VAPOUR_ENGINE_SOURCE);
-  await stat(engineEntry).catch(() => { throw new Error(`Vapour engine source entry was not found at '${engineEntry}'. Reinstall the SDK or set VAPOUR_ENGINE_SOURCE.`); });
-  return engineEntry;
+  return resolveSourceEntry("VAPOUR_ENGINE_SOURCE", "../../engine/src/index.ts", "engine");
+}
+
+/**
+ * `@vapour/engine`'s own source imports `@vapour/math` and `@vapour/gameplay`
+ * as bare specifiers. Inside the monorepo that resolves through pnpm's
+ * workspace symlinks, but a standalone SDK ships no `node_modules` next to
+ * `sdk/engine-src` — so both the type checker and esbuild need an explicit
+ * alias to each sibling package's source, exactly like the engine gets one.
+ */
+async function resolveMathEntry(): Promise<string> {
+  return resolveSourceEntry("VAPOUR_MATH_SOURCE", "../../math/src/index.ts", "math");
+}
+
+async function resolveGameplayEntry(): Promise<string> {
+  return resolveSourceEntry("VAPOUR_GAMEPLAY_SOURCE", "../../gameplay/src/index.ts", "gameplay");
+}
+
+async function resolveSourceEntry(envVar: string, devRelativePath: string, label: string): Promise<string> {
+  const entry = process.env[envVar] === undefined
+    ? fileURLToPath(new URL(devRelativePath, import.meta.url))
+    : path.resolve(process.env[envVar]!);
+  await stat(entry).catch(() => { throw new Error(`Vapour ${label} source entry was not found at '${entry}'. Reinstall the SDK or set ${envVar}.`); });
+  return entry;
+}
+
+async function resolveEngineAliases(): Promise<Record<string, string>> {
+  const [engineEntry, mathEntry, gameplayEntry] = await Promise.all([resolveEngineEntry(), resolveMathEntry(), resolveGameplayEntry()]);
+  return { "@vapour/engine": engineEntry, "@vapour/math": mathEntry, "@vapour/gameplay": gameplayEntry };
 }
 
 async function resolveWebGpuTypes(): Promise<string> {

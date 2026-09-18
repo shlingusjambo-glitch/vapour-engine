@@ -57,7 +57,13 @@ impl GpuContext {
             .await?;
         let capabilities = RenderCapabilities::from_adapter(&adapter);
         let enabled_features = capabilities.optional_features() & adapter.features();
-        let limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+        // The WebGPU specification's guaranteed defaults: every conforming
+        // browser and adapter provides at least these, and they include the
+        // storage buffers (bone palettes, GPU culling, particles) and compute
+        // workgroups the renderer relies on. The WebGL2 downlevel bucket used
+        // before this reports zero storage buffers per stage, which fails
+        // frame bind-group creation the moment skinning is present.
+        let limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Vapour WebGPU device"),

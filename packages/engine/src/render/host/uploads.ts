@@ -47,6 +47,69 @@ export interface TextureUpload {
   readonly mipmaps?: boolean;
 }
 
+/** Six RGBA8 cubemap faces for image-based lighting, in +X, -X, +Y, -Y, +Z,
+ * -Z order and the standard cubemap face orientation. The renderer builds the
+ * prefiltered specular chain and irradiance from it on the GPU. */
+export interface EnvironmentUpload {
+  /** Width and height of every face, in texels. */
+  readonly faceSize: number;
+  /** `6 * faceSize * faceSize * 4` bytes, face-major. */
+  readonly faces: Uint8Array;
+  /** Photographic environments are sRGB; rendered HDR-in-8-bit data is linear. */
+  readonly colorSpace?: "srgb" | "linear";
+  /** Linear multiplier on the map's radiance, in [0, 64]. Defaults to 1. */
+  readonly intensity?: number;
+}
+
+export const MAX_ENVIRONMENT_FACE_SIZE = 2048;
+
+/** A render-to-texture target: an HDR colour texture (plus its own depth)
+ * that a layer renders into and materials sample under the same id. */
+export type RenderTargetSize =
+  | { readonly width: number; readonly height: number }
+  /** A fraction of the presentation surface; reallocated on resize. */
+  | { readonly scale: number };
+
+export function validateRenderTargetSize(id: string, size: RenderTargetSize): void {
+  if (id.trim() === "" || id.startsWith("builtin:"))
+    throw new Error("A render target needs a non-empty, non-reserved identifier.");
+  if ("scale" in size) {
+    if (!Number.isFinite(size.scale) || size.scale <= 0 || size.scale > 4)
+      throw new Error(`Render target '${id}' scale must be finite and in (0, 4].`);
+    return;
+  }
+  if (
+    !Number.isInteger(size.width) ||
+    size.width < 1 ||
+    !Number.isInteger(size.height) ||
+    size.height < 1
+  )
+    throw new Error(`Render target '${id}' needs positive integer dimensions.`);
+}
+
+export function validateEnvironmentUpload(environment: EnvironmentUpload): void {
+  if (
+    !Number.isInteger(environment.faceSize) ||
+    environment.faceSize < 1 ||
+    environment.faceSize > MAX_ENVIRONMENT_FACE_SIZE
+  ) {
+    throw new Error(
+      `An environment map needs an integer face size in [1, ${String(MAX_ENVIRONMENT_FACE_SIZE)}].`,
+    );
+  }
+  const expected = environment.faceSize * environment.faceSize * 4 * 6;
+  if (environment.faces.length !== expected)
+    throw new Error(
+      `An environment map of face size ${String(environment.faceSize)} needs ${String(expected)} RGBA8 bytes, received ${String(environment.faces.length)}.`,
+    );
+  validateEnvironmentIntensity(environment.intensity ?? 1);
+}
+
+export function validateEnvironmentIntensity(intensity: number): void {
+  if (!Number.isFinite(intensity) || intensity < 0 || intensity > 64)
+    throw new Error("Environment intensity must be finite and in [0, 64].");
+}
+
 export interface MaterialTextureSet {
   readonly baseColor?: string;
   readonly normal?: string;

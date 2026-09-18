@@ -9,3 +9,7 @@
  * instead of submitting a million tiles.
  */
 export * from "./tilemap.js";
+export * from "./nav-2d.js";
+export * from "./parallax-2d.js";
+export * from "./particles-2d.js";
+export * from "./atlas-2d.js";

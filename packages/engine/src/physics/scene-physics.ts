@@ -1,6 +1,6 @@
 import { builtinComponentSchemas, normalizeComponentData, ComponentSchemaRegistry } from "../core/component-schema.js";
 import type { PhysicsBodyDescriptor2d, PhysicsEvent2d, PhysicsWorld2dBridge } from "./physics-2d.js";
-import type { PhysicsBodyDescriptor3d, PhysicsEvent3d, PhysicsWorld3dBridge } from "./physics-3d.js";
+import type { CombineRule, MassProperties3d, PhysicsBodyDescriptor3d, PhysicsEvent3d, PhysicsMaterial, PhysicsWorld3dBridge } from "./physics-3d.js";
 import type { SceneDocument, SceneEntityData, TransformData } from "../core/scene-document.js";
 
 export type ScenePhysicsDimension = "2d" | "3d";
@@ -44,6 +44,16 @@ export class ScenePhysicsRuntime {
   }
 
   get bodyCount(): number { return this.#bound.size; }
+
+  /** Registers a named surface with every configured world, so a serialized
+   * collider's `material: "ice"` resolves. Define materials before the first
+   * `prepare` or `fixedUpdate`; a body naming an unknown material is rejected
+   * by the solver. */
+  defineMaterial(material: PhysicsMaterial): void {
+    this.#alive();
+    this.#physics2d?.defineMaterial(material);
+    this.#physics3d?.defineMaterial(material);
+  }
 
   /** Reconciles serialized bodies before gameplay scripts issue queries. */
   prepare(): void { this.#alive(); this.#reconcile(); this.#physics2d?.flush(); this.#physics3d?.flush(); }
@@ -159,7 +169,7 @@ export class ScenePhysicsRuntime {
     const collider = normalized(this.#schemas, "vapour.Collider3D", collider3d!.data), rigid = optionalNormalized(this.#schemas, entity, "vapour.Rigidbody3D");
     const shapeName = text(collider.shape, "Collider3D.shape"), size = tuple(collider.size, 3, "Collider3D.size"), radius = number(collider.radius, "Collider3D.radius"), height = number(collider.height, "Collider3D.height");
     const shape: PhysicsBodyDescriptor3d["shape"] = shapeName === "sphere" ? { type: "sphere", radius } : shapeName === "capsule" || shapeName === "cylinder" ? { type: shapeName, halfHeight: height * 0.5, radius } : { type: "box", halfExtents: [size[0]! * 0.5, size[1]! * 0.5, size[2]! * 0.5] };
-    const descriptor: PhysicsBodyDescriptor3d = { id, bodyType: bodyType(rigid), position: [...pose.position], rotation: [...pose.rotation], shape, ...bodySettings(rigid), ...colliderSettings(collider) };
+    const descriptor: PhysicsBodyDescriptor3d = { id, bodyType: bodyType(rigid), position: [...pose.position], rotation: [...pose.rotation], shape, ...bodySettings(rigid), ...colliderSettings(collider), ...massSettings(rigid) };
     return { dimension: "3d", id, descriptor, fingerprint: fingerprint(descriptor) };
   }
 
@@ -198,7 +208,27 @@ function normalized(registry: ComponentSchemaRegistry, typeName: string, value: 
 function optionalNormalized(registry: ComponentSchemaRegistry, entity: SceneEntityData, typeName: string): Record<string, unknown> | undefined { const value = component(entity, typeName); return value === undefined ? undefined : normalized(registry, typeName, value.data); }
 function bodyType(value: Record<string, unknown> | undefined): PhysicsBodyDescriptor2d["bodyType"] { return value === undefined ? "static" : text(value.bodyType, "Rigidbody.bodyType") as PhysicsBodyDescriptor2d["bodyType"]; }
 function bodySettings(value: Record<string, unknown> | undefined) { return value === undefined ? {} : { gravityScale: number(value.gravityScale, "Rigidbody.gravityScale"), linearDamping: number(value.linearDamping, "Rigidbody.linearDamping"), angularDamping: number(value.angularDamping, "Rigidbody.angularDamping"), continuousCollisionDetection: boolean(value.continuousCollisionDetection) }; }
-function colliderSettings(value: Record<string, unknown>) { return { density: number(value.density, "Collider.density"), friction: number(value.friction, "Collider.friction"), restitution: number(value.restitution, "Collider.restitution"), sensor: boolean(value.sensor), layer: number(value.layer, "Collider.layer"), mask: number(value.mask, "Collider.mask") }; }
+function colliderSettings(value: Record<string, unknown>) {
+  // Materials, combine rules, and mass live outside the built-in schema so a
+  // collider authored before Mirage still normalizes; the schema keeps unknown
+  // keys, and only well-formed values are forwarded.
+  return {
+    density: number(value.density, "Collider.density"), friction: number(value.friction, "Collider.friction"), restitution: number(value.restitution, "Collider.restitution"), sensor: boolean(value.sensor), layer: number(value.layer, "Collider.layer"), mask: number(value.mask, "Collider.mask"),
+    ...(typeof value.material === "string" && value.material.trim() !== "" ? { material: value.material } : {}),
+    ...(isCombineRule(value.frictionCombine) ? { frictionCombine: value.frictionCombine } : {}),
+    ...(isCombineRule(value.restitutionCombine) ? { restitutionCombine: value.restitutionCombine } : {}),
+  };
+}
+function isCombineRule(value: unknown): value is CombineRule { return value === "average" || value === "min" || value === "max" || value === "multiply"; }
+/** `Rigidbody3D.mass` (> 0) with optional `centerOfMass` and `principalInertia` overrides density. */
+function massSettings(value: Record<string, unknown> | undefined): { massProperties?: MassProperties3d } {
+  if (value === undefined || typeof value.mass !== "number") return {};
+  const mass = number(value.mass, "Rigidbody3D.mass");
+  if (mass <= 0) return {};
+  const centerOfMass = Array.isArray(value.centerOfMass) ? tuple(value.centerOfMass, 3, "Rigidbody3D.centerOfMass") as [number, number, number] : [0, 0, 0] as const;
+  const principalInertia = Array.isArray(value.principalInertia) ? tuple(value.principalInertia, 3, "Rigidbody3D.principalInertia") as [number, number, number] : undefined;
+  return { massProperties: { mass, centerOfMass, ...(principalInertia ? { principalInertia } : {}) } };
+}
 function tuple(value: unknown, length: number, label: string): number[] { if (!Array.isArray(value) || value.length !== length || !value.every((item) => typeof item === "number" && Number.isFinite(item))) throw new Error(`${label} requires ${String(length)} finite numbers.`); return value; }
 function number(value: unknown, label: string): number { if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} must be finite.`); return value; }
 function text(value: unknown, label: string): string { if (typeof value !== "string") throw new Error(`${label} must be text.`); return value; }

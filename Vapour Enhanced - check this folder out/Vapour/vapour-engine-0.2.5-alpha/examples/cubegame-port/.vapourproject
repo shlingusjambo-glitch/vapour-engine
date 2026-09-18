@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "id": "bafdc21e-5dfd-4caa-a750-f3ab756c395f",
+  "name": "CubeGame Vapour Port",
+  "editorVersion": "0.2.0-alpha",
+  "startupScene": "Assets/Scenes/Main.scene.json",
+  "scriptEntry": "Scripts/main.ts",
+  "rendering": {
+    "preferredCanvasFormat": "auto",
+    "powerPreference": "high-performance"
+  }
+}

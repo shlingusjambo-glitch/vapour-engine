@@ -1,0 +1,5 @@
+.venv/
+soundfonts/*.sf2
+__pycache__/
+*.egg-info/
+examples/*.wav

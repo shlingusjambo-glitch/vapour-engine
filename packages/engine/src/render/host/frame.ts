@@ -1,7 +1,13 @@
 /** The presentation contract: packed frames, render statistics, and the
  * `RenderHost` interface that both the WebGPU and headless hosts implement.
  */
-import type { MeshUpload, MaterialUpload, TextureUpload } from "./uploads.js";
+import type {
+  EnvironmentUpload,
+  MeshUpload,
+  MaterialUpload,
+  RenderTargetSize,
+  TextureUpload,
+} from "./uploads.js";
 import type { RustRenderCapabilities } from "./wasm-contract.js";
 import type { RenderLayerSubmission } from "../render-layers.js";
 
@@ -30,6 +36,11 @@ export interface RenderStats {
   cpuEncodeMs: number;
   drawCalls: number;
   triangles: number;
+  /** Which frustum-culling path the renderer ran this frame; absent from
+   * hosts that never cull. */
+  culling?: "gpu" | "cpu";
+  /** Instances the CPU culling path dropped; unknown on the GPU path. */
+  culledInstances?: number;
 }
 
 /** One frame's instances and view, already packed for the WASM boundary. */
@@ -57,6 +68,14 @@ export interface PackedFrame {
   /** Three aligned vec4 lanes: clear RGBA, fog RGB/mode, and fog parameters.
    * Empty uses the renderer's default environment. */
   readonly environment?: Float32Array;
+  /** One entry per instance: that instance's index into `boneMatrices`
+   * (in bones, not floats), or a negative value if it is not skinned. Empty
+   * means no instance in this frame is skinned. */
+  readonly boneOffsets?: Float32Array;
+  /** This frame's skinned instances' bone palettes, concatenated — 16
+   * column-major floats per bone. Build with `packBonePalette` from
+   * `@vapour/engine`'s `skinningMatrices` output. */
+  readonly boneMatrices?: Float32Array;
 }
 
 /** Presentation boundary used by a running game.
@@ -76,6 +95,25 @@ export interface RenderHost {
   releaseMaterial(id: string): boolean;
   setPostProcess(settings: PostProcessSettings): void;
   postProcess(): Readonly<PostProcessSettings>;
+  /** Replaces the image-based-lighting environment. Safe before initialize.
+   * Optional on the contract so minimal test hosts stay small; both shipped
+   * hosts implement it. */
+  uploadEnvironment?(environment: EnvironmentUpload): void;
+  /** Captures the most recently submitted frame's procedural sky as the
+   * environment. Deliberately explicit rather than automatic: the capture
+   * and convolution cost several dozen small passes, so a day/night cycle
+   * should call it at a cadence it chooses, not every frame. */
+  deriveEnvironmentFromSky?(intensity?: number): void;
+  clearEnvironment?(): void;
+  /** Replaces the decal set projected onto the first layer's opaque depth.
+   * `decals` is `packDecals` output; `atlasTexture` names an uploaded texture
+   * the regions address, or undefined for tint-only decals. The set persists
+   * until replaced. */
+  submitDecals?(decals: Float32Array, atlasTexture?: string): void;
+  /** Creates (or resizes) a render target that layers can draw into via
+   * `RenderLayerOptions.target` and materials can sample as a texture. */
+  createRenderTarget?(id: string, size: RenderTargetSize): void;
+  releaseRenderTarget?(id: string): boolean;
   submitFrame(frame: PackedFrame): void;
   submitLayers(layers: readonly RenderLayerSubmission[]): void;
   renderFrame(timeMilliseconds: number): RenderStats | undefined;

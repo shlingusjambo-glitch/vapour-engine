@@ -1,0 +1,1220 @@
+{
+  "$schema": "https://vapour.dev/schema/engine-manifest-1.json",
+  "manifestVersion": 1,
+  "engine": {
+    "name": "Vapour Engine",
+    "version": "0.2.0-alpha",
+    "release": {
+      "version": "0.2.5-alpha",
+      "codename": "Mirage"
+    },
+    "runtime": "Rust/WebAssembly core with a TypeScript host",
+    "renderer": "WebGPU",
+    "targets": [
+      "2d",
+      "3d",
+      "webxr"
+    ],
+    "scriptingLanguages": [
+      "typescript",
+      "vapour-script"
+    ]
+  },
+  "conventions": {
+    "coordinateSystem": "right-handed, +Y up, -Z forward",
+    "matrixLayout": "column-major, flat 16-element arrays",
+    "rotationFormat": "[x, y, z, w] unit quaternion",
+    "eulerOrder": "intrinsic Y-X-Z in degrees",
+    "clipDepthRange": "[0, 1]",
+    "colorSpace": "sRGB authored, linear for lighting",
+    "sceneFormat": "deterministic JSON with stable UUID asset references",
+    "errorPolicy": "invalid input throws with an actionable message rather than propagating NaN"
+  },
+  "entryPoints": {
+    "engine": "packages/engine/src/index.ts",
+    "math": "packages/math/src/index.ts",
+    "gameplay": "packages/gameplay/src/index.ts",
+    "cli": "packages/cli/src/index.ts",
+    "editor": "packages/editor/src"
+  },
+  "packages": [
+    {
+      "name": "@vapour/assetgen",
+      "version": "0.2.5-alpha",
+      "description": "Declarative, AI-authorable 2D and 3D asset generation for Vapour Engine",
+      "path": "packages/assetgen",
+      "source": "packages/assetgen/src/index.ts",
+      "dependsOn": [
+        "@vapour/math"
+      ]
+    },
+    {
+      "name": "@vapour/cli",
+      "version": "0.2.0-alpha",
+      "description": "",
+      "path": "packages/cli",
+      "source": "packages/cli/src/index.ts",
+      "dependsOn": [
+        "@vapour/engine"
+      ]
+    },
+    {
+      "name": "@vapour/editor",
+      "version": "0.2.0-alpha",
+      "description": "",
+      "path": "packages/editor",
+      "source": "packages/editor/src/index.ts",
+      "dependsOn": [
+        "@vapour/engine"
+      ]
+    },
+    {
+      "name": "@vapour/engine",
+      "version": "0.2.0-alpha",
+      "description": "Browser host and TypeScript gameplay SDK for Vapour Engine",
+      "path": "packages/engine",
+      "source": "packages/engine/src/index.ts",
+      "dependsOn": [
+        "@vapour/math",
+        "@vapour/gameplay"
+      ]
+    },
+    {
+      "name": "@vapour/gameplay",
+      "version": "0.2.5-alpha",
+      "description": "Gameplay framework for Vapour Engine: inventory, crafting, combat, status effects, and narrative",
+      "path": "packages/gameplay",
+      "source": "packages/gameplay/src/index.ts",
+      "dependsOn": []
+    },
+    {
+      "name": "@vapour/math",
+      "version": "0.2.5-alpha",
+      "description": "Shared linear algebra, easing, curves, gradients, and geometry for Vapour Engine",
+      "path": "packages/math",
+      "source": "packages/math/src/index.ts",
+      "dependsOn": []
+    },
+    {
+      "name": "@vapour/net",
+      "version": "0.2.5-alpha",
+      "description": "Authoritative multiplayer for Vapour Engine: replication, RPCs, prediction, and interest management",
+      "path": "packages/net",
+      "source": "packages/net/src/index.ts",
+      "dependsOn": [
+        "@vapour/math"
+      ]
+    },
+    {
+      "name": "@vapour/three-bridge",
+      "version": "0.2.0-alpha",
+      "description": "Three.js scene migration bridge for Vapour Engine's WebGPU renderer",
+      "path": "packages/three-bridge",
+      "source": "packages/three-bridge/src/index.ts",
+      "dependsOn": []
+    }
+  ],
+  "subsystems": [
+    {
+      "name": "ai",
+      "summary": "Game AI: state machines, behavior trees, steering, and pathfinding.",
+      "path": "packages/engine/src/ai",
+      "modules": [
+        "ai",
+        "nav-agent",
+        "nav-debug",
+        "navigation",
+        "navmesh",
+        "open-world",
+        "perception"
+      ]
+    },
+    {
+      "name": "animation",
+      "summary": "Animation: clips, poses, blending, layers, and state machines.",
+      "path": "packages/engine/src/animation",
+      "modules": [
+        "animator",
+        "blend-tree",
+        "clip",
+        "ik",
+        "retarget",
+        "skinning"
+      ]
+    },
+    {
+      "name": "assets",
+      "summary": "Assets: the stable-ID database, importers, mesh library, and load progress.",
+      "path": "packages/engine/src/assets",
+      "modules": [
+        "asset-database",
+        "gltf-import",
+        "gltf-resources",
+        "gltf-runtime",
+        "loading-progress",
+        "mesh-library",
+        "project-templates"
+      ]
+    },
+    {
+      "name": "audio",
+      "summary": "Audio: the Web Audio mixer, clips, and spatial voices.",
+      "path": "packages/engine/src/audio",
+      "modules": [
+        "audio",
+        "mixer",
+        "open-world-audio",
+        "worklet"
+      ]
+    },
+    {
+      "name": "core",
+      "summary": "Core runtime: capability probing, scene documents, the WASM bridge, and the frame loop.",
+      "path": "packages/engine/src/core",
+      "modules": [
+        "browser-capabilities",
+        "component-schema",
+        "frame-builder",
+        "game-runtime",
+        "plugins",
+        "rotation",
+        "runtime-loop",
+        "scene-document",
+        "wasm-bridge",
+        "worker-task-pool"
+      ]
+    },
+    {
+      "name": "diagnostics",
+      "summary": "Diagnostics: counters, timings, categorized logging, and debug drawing.",
+      "path": "packages/engine/src/diagnostics",
+      "modules": [
+        "counters",
+        "debug-draw",
+        "logging",
+        "open-world-debug",
+        "overlay"
+      ]
+    },
+    {
+      "name": "framework",
+      "summary": "Game framework utilities.",
+      "path": "packages/engine/src/framework",
+      "modules": [
+        "application",
+        "localization",
+        "pool",
+        "save",
+        "scheduler",
+        "settings",
+        "signal",
+        "storage",
+        "tags",
+        "tween"
+      ]
+    },
+    {
+      "name": "http",
+      "summary": "HTTP and WebSockets for games.",
+      "path": "packages/engine/src/http",
+      "modules": [
+        "http",
+        "socket"
+      ]
+    },
+    {
+      "name": "input",
+      "summary": "Input: action-based keyboard, pointer, touch, and gamepad input.",
+      "path": "packages/engine/src/input",
+      "modules": [
+        "actions",
+        "input"
+      ]
+    },
+    {
+      "name": "integration",
+      "summary": "Integration: glue that proves separately-tested subsystems compose.",
+      "path": "packages/engine/src/integration",
+      "modules": [
+        "audio-follow",
+        "generated-assets",
+        "nav-locomotion",
+        "networked-character",
+        "networked-grab",
+        "streaming-navmesh"
+      ]
+    },
+    {
+      "name": "net",
+      "summary": "Networking: transports and the low-level session layer.",
+      "path": "packages/engine/src/net",
+      "modules": [
+        "networking",
+        "scene-sync"
+      ]
+    },
+    {
+      "name": "particles",
+      "summary": "Particles and visual effects.",
+      "path": "packages/engine/src/particles",
+      "modules": [
+        "gpu-particles",
+        "particles"
+      ]
+    },
+    {
+      "name": "persistence",
+      "summary": "Persistence: versioned IndexedDB saves.",
+      "path": "packages/engine/src/persistence",
+      "modules": [
+        "save-database"
+      ]
+    },
+    {
+      "name": "physics",
+      "summary": "Physics: 2D and 3D Rust-backed simulation and its scene integration.",
+      "path": "packages/engine/src/physics",
+      "modules": [
+        "interaction",
+        "locomotion-3d",
+        "native-test-world",
+        "physics-2d",
+        "physics-3d",
+        "physics-debug",
+        "physics-interpolation",
+        "physics-worker-protocol",
+        "ragdoll-blend",
+        "scene-physics",
+        "vehicle-3d",
+        "voxel-physics"
+      ]
+    },
+    {
+      "name": "render",
+      "summary": "Rendering: presentation hosts, scene extraction, cameras, lights, and 2D renderers.",
+      "path": "packages/engine/src/render",
+      "modules": [
+        "culling",
+        "decals",
+        "editor-camera",
+        "environment",
+        "headless-render-host",
+        "incremental-render-world",
+        "lighting-2d",
+        "lights",
+        "lod",
+        "picking",
+        "projection",
+        "render-layers",
+        "render-world",
+        "shadows",
+        "sprite-2d",
+        "ui-renderer-2d",
+        "xr-presentation"
+      ]
+    },
+    {
+      "name": "resources",
+      "summary": "Resources: loading, reference counting, dependencies, caching, and bundles.",
+      "path": "packages/engine/src/resources",
+      "modules": [
+        "bundle",
+        "handle",
+        "resource-manager"
+      ]
+    },
+    {
+      "name": "scene",
+      "summary": "Scenes: loading, additive composition, lifecycle, and prefabs.",
+      "path": "packages/engine/src/scene",
+      "modules": [
+        "prefab",
+        "scene-manager"
+      ]
+    },
+    {
+      "name": "scripting",
+      "summary": "Scripting: the TypeScript lifecycle and the Vapour Script compiler.",
+      "path": "packages/engine/src/scripting",
+      "modules": [
+        "scripting",
+        "vapour-script",
+        "vs-bindings"
+      ]
+    },
+    {
+      "name": "text",
+      "summary": "Text: font import, atlas generation, and text mesh construction.",
+      "path": "packages/engine/src/text",
+      "modules": [
+        "font-asset",
+        "font-import",
+        "rich-text",
+        "text-2d",
+        "text-batch"
+      ]
+    },
+    {
+      "name": "tilemap",
+      "summary": "Tilemaps: storage, collision, and rendering data for 2D games.",
+      "path": "packages/engine/src/tilemap",
+      "modules": [
+        "atlas-2d",
+        "nav-2d",
+        "parallax-2d",
+        "particles-2d",
+        "tilemap"
+      ]
+    },
+    {
+      "name": "ui",
+      "summary": "UI: retained layout, hit testing, focus, and widgets.",
+      "path": "packages/engine/src/ui",
+      "modules": [
+        "animation",
+        "navigation",
+        "theme",
+        "ui",
+        "widgets",
+        "world-ui"
+      ]
+    },
+    {
+      "name": "voxel",
+      "summary": "Voxel worlds: chunk storage, generation, meshing, and the block registry.",
+      "path": "packages/engine/src/voxel",
+      "modules": [
+        "voxel-block-registry",
+        "voxel-generation",
+        "voxel-lighting",
+        "voxel-mesher",
+        "voxel-save",
+        "voxel-world"
+      ]
+    },
+    {
+      "name": "world",
+      "summary": "Worlds: terrain, streaming, and procedural noise.",
+      "path": "packages/engine/src/world",
+      "modules": [
+        "large-world",
+        "persistent-streaming",
+        "procedural-noise",
+        "terrain",
+        "terrain-chunks",
+        "terrain-sculpt",
+        "vegetation",
+        "world-streaming"
+      ]
+    },
+    {
+      "name": "xr",
+      "summary": "XR: WebXR sessions, tracking, and locomotion.",
+      "path": "packages/engine/src/xr",
+      "modules": [
+        "interaction",
+        "xr",
+        "xr-capabilities",
+        "xr-hands",
+        "xr-locomotion",
+        "xr-rig"
+      ]
+    }
+  ],
+  "capabilities": {
+    "counts": {
+      "working": 136,
+      "experimental": 42,
+      "planned": 2
+    },
+    "source": "docs/status.md",
+    "entries": [
+      {
+        "capability": "Generational entities and transform hierarchy",
+        "status": "working"
+      },
+      {
+        "capability": "Deterministic JSON scene model",
+        "status": "working"
+      },
+      {
+        "capability": "Browser capability diagnostics",
+        "status": "working"
+      },
+      {
+        "capability": "Action-based keyboard, pointer, touch, and gamepad input",
+        "status": "working"
+      },
+      {
+        "capability": "Rust WebGPU surface, standard PBR shader, and render graph",
+        "status": "working"
+      },
+      {
+        "capability": "Batched scene-to-WASM extraction and per-mesh GPU instancing",
+        "status": "working"
+      },
+      {
+        "capability": "Seven generated built-in meshes with mesh-aware picking and framing",
+        "status": "working"
+      },
+      {
+        "capability": "Per-instance metallic, roughness, emission, and alpha cutoff",
+        "status": "working"
+      },
+      {
+        "capability": "Stable runtime RGBA8 textures and standard material assets",
+        "status": "working"
+      },
+      {
+        "capability": "Per-vertex texture layers and configurable grid-atlas sampling",
+        "status": "working"
+      },
+      {
+        "capability": "Opaque/cutout/blended materials, double-sided state, and transparent ordering",
+        "status": "working"
+      },
+      {
+        "capability": "Ambient, hemisphere, directional, point, and spot light rigs",
+        "status": "working"
+      },
+      {
+        "capability": "Atomic multi-camera layers with colour/depth load policy",
+        "status": "working"
+      },
+      {
+        "capability": "Perspective and true orthographic WebGPU camera projections",
+        "status": "working"
+      },
+      {
+        "capability": "Batched atlas sprites, nine-slicing, sorting layers, and pixel-perfect camera calculations",
+        "status": "experimental"
+      },
+      {
+        "capability": "Unicode-aware font-atlas text meshes with kerning, wrapping, alignment, and tint",
+        "status": "experimental"
+      },
+      {
+        "capability": "Browser font measurement, atlas packing, rasterization, and signed-distance-field generation",
+        "status": "experimental"
+      },
+      {
+        "capability": "Retained responsive UI layout, hit testing, focus, buttons, toggles, and sliders",
+        "status": "experimental"
+      },
+      {
+        "capability": "Web Audio mixer buses, clips, streaming, spatial voices, listener, and autoplay diagnostics",
+        "status": "working"
+      },
+      {
+        "capability": "Moving-emitter/listener Doppler with authored pitch preservation and bounded playback rates",
+        "status": "working"
+      },
+      {
+        "capability": "Data-driven branching narrative runtime, localization, rollback, saves, and grapheme typewriter",
+        "status": "experimental"
+      },
+      {
+        "capability": "Executable engine-only narrative proof with SDF text, UI, choices, audio, rollback, and saves",
+        "status": "experimental"
+      },
+      {
+        "capability": "Per-layer clear colour plus linear/exponential distance fog",
+        "status": "working"
+      },
+      {
+        "capability": "Scene-view camera navigation, ray-cast selection, and transform gizmos",
+        "status": "working"
+      },
+      {
+        "capability": "Schema-driven component inspectors and the Add Component menu",
+        "status": "working"
+      },
+      {
+        "capability": "Scene-serialized SpriteRenderer, material references, tint, and deterministic sort depth",
+        "status": "experimental"
+      },
+      {
+        "capability": "Undo/redo with gesture coalescing across every scene mutation",
+        "status": "working"
+      },
+      {
+        "capability": "Shared project templates used by the Hub, the CLI, and `templates/`",
+        "status": "working"
+      },
+      {
+        "capability": "Hub project creation, disk/browser workspaces, recents, and version pins",
+        "status": "experimental"
+      },
+      {
+        "capability": "CLI validation, static builds, dev hosting, and structured automation output",
+        "status": "experimental"
+      },
+      {
+        "capability": "TypeScript script lifecycle",
+        "status": "experimental"
+      },
+      {
+        "capability": "Vapour Script compiler, diagnostics, mixed TS/VS modules, CLI validation, and production builds",
+        "status": "experimental"
+      },
+      {
+        "capability": "Ordered VS/TS runtime modules, contact events, contextual errors, and hot-reload rollback",
+        "status": "experimental"
+      },
+      {
+        "capability": "Stable-ID asset database",
+        "status": "experimental"
+      },
+      {
+        "capability": "Game view (authored camera preview; scripts and physics do not run yet)",
+        "status": "experimental"
+      },
+      {
+        "capability": "glTF/GLB geometry, material, node, scene, and external-buffer import",
+        "status": "experimental"
+      },
+      {
+        "capability": "Image decode and compressed texture transcoding pipeline",
+        "status": "planned"
+      },
+      {
+        "capability": "Batched TypeScript/WASM runtime bridge",
+        "status": "working"
+      },
+      {
+        "capability": "Runtime-generated meshes, `u32` indices, and per-vertex colour",
+        "status": "working"
+      },
+      {
+        "capability": "Binary game-frame submission and fixed-step `GameRuntime`",
+        "status": "working"
+      },
+      {
+        "capability": "Renderer-independent `RuntimeLoop` lifecycle and deterministic stepping",
+        "status": "working"
+      },
+      {
+        "capability": "Weighted, nested, observable, cancellable loading sessions with error propagation",
+        "status": "working"
+      },
+      {
+        "capability": "Generic slot inventories with policies, metadata stacking, atomic removal, and revisions",
+        "status": "working"
+      },
+      {
+        "capability": "Generic shaped/shapeless crafting with tags, exact consumption, and count planning",
+        "status": "working"
+      },
+      {
+        "capability": "Health/damage lifecycle, ordered mitigation, invulnerability, and simulation-clock status effects",
+        "status": "working"
+      },
+      {
+        "capability": "Deterministic state machines, resumable behavior trees, cooldowns, and allocation-free steering",
+        "status": "working"
+      },
+      {
+        "capability": "Vision/hearing perception, target selection, typed blackboards, and AI controllers",
+        "status": "working"
+      },
+      {
+        "capability": "Budgeted deterministic A* over voxel, tile, waypoint, or navmesh-style caller graphs",
+        "status": "experimental"
+      },
+      {
+        "capability": "Versioned IndexedDB saves with typed stores, prefix deletion, diagnostics, and memory fallback",
+        "status": "working"
+      },
+      {
+        "capability": "Shared WebGPU/headless `RenderHost` presentation contract",
+        "status": "working"
+      },
+      {
+        "capability": "Deterministic seeded random plus coherent 2D/3D fractal noise",
+        "status": "working"
+      },
+      {
+        "capability": "Reusable 3D interest planning, async streaming, cancellation, retry, and unload lifecycle",
+        "status": "working"
+      },
+      {
+        "capability": "Reference-counted resource handles, dependency graphs, caching, and bundles",
+        "status": "working"
+      },
+      {
+        "capability": "Async/additive scene loading, persistent layers, transitions, and world composition",
+        "status": "working"
+      },
+      {
+        "capability": "Prefabs with nesting, per-instance overrides, and deterministic instantiation",
+        "status": "working"
+      },
+      {
+        "capability": "Typed signals, event bus, deterministic timers, coroutines, and tweens",
+        "status": "working"
+      },
+      {
+        "capability": "Object pooling, layer masks, tag index, and entity groups",
+        "status": "working"
+      },
+      {
+        "capability": "Namespaced browser storage, schema-validated settings, and versioned migrating saves",
+        "status": "working"
+      },
+      {
+        "capability": "CLDR-aware localization with fallback chains, interpolation, and gap reporting",
+        "status": "working"
+      },
+      {
+        "capability": "Application lifecycle, pause on hide, clipboard, and canvas screenshots",
+        "status": "working"
+      },
+      {
+        "capability": "Counter registry, timing regions, percentile sampling, and JSON performance reports",
+        "status": "working"
+      },
+      {
+        "capability": "Categorized logging with per-category levels and pluggable sinks",
+        "status": "working"
+      },
+      {
+        "capability": "Immediate-mode debug drawing with categories, timed primitives, and a budget",
+        "status": "working"
+      },
+      {
+        "capability": "Diagnostics overlay model, budget flagging, and text/DOM rendering",
+        "status": "working"
+      },
+      {
+        "capability": "Incremental render-world extraction with dirty tracking and document observation",
+        "status": "working"
+      },
+      {
+        "capability": "Frustum and distance culling, instance bounds, and shadow-cascade slice frustums",
+        "status": "working"
+      },
+      {
+        "capability": "Screen-height level of detail with bias, per-mesh chains, and small-object culling",
+        "status": "working"
+      },
+      {
+        "capability": "Four-cascade directional shadow depth rendering, stable fitting, and filtered PBR sampling",
+        "status": "experimental"
+      },
+      {
+        "capability": "RGBA16F scene rendering with exposure and selectable fullscreen tone mapping",
+        "status": "experimental"
+      },
+      {
+        "capability": "HDR bloom, saturation, contrast, vignette, and chromatic-aberration presentation stack",
+        "status": "experimental"
+      },
+      {
+        "capability": "Tangent-space normal mapping with glTF tangents, normal scale, and procedural tangent generation",
+        "status": "working"
+      },
+      {
+        "capability": "Per-layer camera-correct HDR procedural skies with configurable gradients and aligned sun discs",
+        "status": "experimental"
+      },
+      {
+        "capability": "Rapier compound, convex-hull, triangle-mesh, plane, and heightfield 3D collider runtime",
+        "status": "working"
+      },
+      {
+        "capability": "Generated-geometry kernel: mesh builder, welding, normals, and T-junction repair",
+        "status": "working"
+      },
+      {
+        "capability": "Parametric primitives, placement operators, and profile extrude/revolve/sweep/loft",
+        "status": "working"
+      },
+      {
+        "capability": "Constructive solid geometry with closed-operand validation and chainable results",
+        "status": "working"
+      },
+      {
+        "capability": "Architecture generation: walls, openings, stairs, roofs, rooms, and aperture metadata",
+        "status": "working"
+      },
+      {
+        "capability": "Convex hulls, vertex-clustering LOD, triplanar UVs, and derived collision shapes",
+        "status": "working"
+      },
+      {
+        "capability": "Navigation surfaces and doorway links derived from generated buildings",
+        "status": "working"
+      },
+      {
+        "capability": "Standard humanoid skeletons with inverse bind matrices and rig validation",
+        "status": "working"
+      },
+      {
+        "capability": "Procedural characters: proportions, skinning weights, attachments, ragdoll capsules, and crowds",
+        "status": "working"
+      },
+      {
+        "capability": "Seeded vegetation, rocks, grass, heightfield terrain, and slope-aware scattering",
+        "status": "working"
+      },
+      {
+        "capability": "Executable AI-generated environment showcase with derived collision and navigation",
+        "status": "working"
+      },
+      {
+        "capability": "Heightfield navmesh baking with slope rejection, radius erosion, and overlapping floors",
+        "status": "working"
+      },
+      {
+        "capability": "Versioned deterministic NavMesh assets with validated spans, areas, and off-mesh links",
+        "status": "working"
+      },
+      {
+        "capability": "NavMesh pathfinding, area costs, off-mesh links, and corridor smoothing",
+        "status": "working"
+      },
+      {
+        "capability": "Navigation agents, deterministic velocity-sampling crowd avoidance, and moving destinations",
+        "status": "working"
+      },
+      {
+        "capability": "Reference-counted runtime NavMesh obstacle carving and path rerouting",
+        "status": "working"
+      },
+      {
+        "capability": "Shared debug-draw visualization for NavMesh spans, links, obstacles, labels, and routes",
+        "status": "working"
+      },
+      {
+        "capability": "Serializable eased UI animation with reduced-motion behavior",
+        "status": "working"
+      },
+      {
+        "capability": "Name-targeted animation clips, pose sampling, blending, and masking",
+        "status": "working"
+      },
+      {
+        "capability": "Animator layers, crossfades, parameter-driven state machines, and events",
+        "status": "working"
+      },
+      {
+        "capability": "Parameter-driven 1D and 2D animation blend trees",
+        "status": "working"
+      },
+      {
+        "capability": "Skinning matrices, root motion extraction, two-bone IK, and clamped look-at",
+        "status": "working"
+      },
+      {
+        "capability": "Runtime pose retargeting with explicit mappings, proportion scaling, and coverage diagnostics",
+        "status": "working"
+      },
+      {
+        "capability": "Input action maps, context stacks, vector composites, and dead-zone rescaling",
+        "status": "working"
+      },
+      {
+        "capability": "Serializable input rebinding, device detection, and local-multiplayer player slots",
+        "status": "working"
+      },
+      {
+        "capability": "Authoritative server, tick-based replication, ownership, spawning, and RPCs",
+        "status": "working"
+      },
+      {
+        "capability": "Listen-server host mode using the standard authoritative protocol",
+        "status": "working"
+      },
+      {
+        "capability": "Delta compression, quantization, and radius interest management",
+        "status": "working"
+      },
+      {
+        "capability": "Client prediction, input reconciliation, and snapshot interpolation",
+        "status": "working"
+      },
+      {
+        "capability": "Deterministic simulated latency, jitter, packet loss, and reordering",
+        "status": "working"
+      },
+      {
+        "capability": "Bounded Web Worker task scheduling, readiness, transfer lists, and failure isolation",
+        "status": "working"
+      },
+      {
+        "capability": "Chunked voxel storage, seam-aware meshing, DDA raycasts, and swept AABB collision",
+        "status": "experimental"
+      },
+      {
+        "capability": "Executable CubeGame clean-room port milestone",
+        "status": "experimental"
+      },
+      {
+        "capability": "Authorized real CubeGame local-world boot, generation, atlas, and chunk streaming through Vapour",
+        "status": "experimental"
+      },
+      {
+        "capability": "Three scene-graph migration bridge",
+        "status": "experimental"
+      },
+      {
+        "capability": "Namespaced plugin registry and deterministic schedules",
+        "status": "experimental"
+      },
+      {
+        "capability": "WebSocket transport, backpressure, RPC, snapshot buffering, and entity authority",
+        "status": "experimental"
+      },
+      {
+        "capability": "WebXR session/reference spaces plus stereo-view, controller, and hand tracking snapshots",
+        "status": "experimental"
+      },
+      {
+        "capability": "XR WebGPU presentation, multiview, interactions, locomotion, and hardware verification",
+        "status": "planned"
+      },
+      {
+        "capability": "Rust/WASM 3D rigid bodies, primitive/world colliders, sensors, layers, CCD, events, and raycasts",
+        "status": "experimental"
+      },
+      {
+        "capability": "Rust/WASM 2D rigid bodies, native shapes, events, layers, sensors, CCD, and raycasts",
+        "status": "experimental"
+      },
+      {
+        "capability": "Serialized 2D/3D physics components, fixed-step synchronization, teardown, and script contacts",
+        "status": "experimental"
+      },
+      {
+        "capability": "Exact 2D/3D overlaps, swept-shape queries, and Rust-backed scene character controllers",
+        "status": "experimental"
+      },
+      {
+        "capability": "Torque, force-at-point, angular velocity, exact queries, and native character controllers",
+        "status": "experimental"
+      },
+      {
+        "capability": "Rust/WASM physics joints: fixed, hinge, slider, ball, spring, limits, and motors",
+        "status": "working"
+      },
+      {
+        "capability": "Ragdoll joint construction from generated skeletons",
+        "status": "experimental"
+      },
+      {
+        "capability": "Velocity-driven grabbing, carrying, throwing, and motorised physics doors",
+        "status": "working"
+      },
+      {
+        "capability": "Layout-derived directional focus navigation with repeat, wrapping, and re-entry",
+        "status": "working"
+      },
+      {
+        "capability": "HTTP client with timeouts, backoff retries, progress, typed errors, and injected fetch",
+        "status": "working"
+      },
+      {
+        "capability": "Reconnecting WebSocket with exponential backoff and bounded send queueing",
+        "status": "working"
+      },
+      {
+        "capability": "Standard bus layout, perceptual volume mapping, and equal-power music crossfading",
+        "status": "working"
+      },
+      {
+        "capability": "Priority and distance voice limiting with per-bus and per-clip caps",
+        "status": "working"
+      },
+      {
+        "capability": "Blended positional audio zones with reverb, filtering, and gain",
+        "status": "working"
+      },
+      {
+        "capability": "Allocation-free particle simulation with shapes, curves, gradients, bounded trails, and collision",
+        "status": "working"
+      },
+      {
+        "capability": "Particle system pooling with active limits",
+        "status": "working"
+      },
+      {
+        "capability": "Floating-origin large-world coordinates with snapping and buffer rebasing",
+        "status": "working"
+      },
+      {
+        "capability": "World partitioning with unload hysteresis and ring-based terrain LOD seam detection",
+        "status": "working"
+      },
+      {
+        "capability": "Flat-array tilemaps with layers, parallax, and view-culled render instances",
+        "status": "working"
+      },
+      {
+        "capability": "Swept tilemap collision with separated axes, slopes, and one-way platforms",
+        "status": "working"
+      },
+      {
+        "capability": "Executable physics sandbox showcase: joints, grabbing, throwing, doors, and input actions",
+        "status": "working"
+      },
+      {
+        "capability": "Executable multiplayer arena showcase: prediction, projectiles, health, and respawning",
+        "status": "working"
+      },
+      {
+        "capability": "Scroll views, virtual lists, code-point text fields, tooltips, and drag and drop",
+        "status": "working"
+      },
+      {
+        "capability": "Inheriting theme registry with design tokens and a high-contrast variant",
+        "status": "working"
+      },
+      {
+        "capability": "XR cone raycasting, direct and ray grabbing, and two-handed manipulation",
+        "status": "working"
+      },
+      {
+        "capability": "XR locomotion with snap and smooth turning, comfort fades, and ballistic teleport arcs",
+        "status": "working"
+      },
+      {
+        "capability": "Physics materials, friction/restitution combine rules, mass properties, and centre of mass",
+        "status": "working"
+      },
+      {
+        "capability": "Runtime pose/ragdoll blending with activation and recovery ramps",
+        "status": "experimental"
+      },
+      {
+        "capability": "Raycast vehicles: wheel suspension, steering, and engine/brake torque",
+        "status": "experimental"
+      },
+      {
+        "capability": "Worker-side physics stepping over SharedArrayBuffer with a same-thread fallback and interpolation",
+        "status": "experimental"
+      },
+      {
+        "capability": "Physics debug rendering and a body/contact/step-time statistics block",
+        "status": "working"
+      },
+      {
+        "capability": "Point and spot shadows sharing the directional shadow atlas, with light-priority eviction",
+        "status": "experimental"
+      },
+      {
+        "capability": "Skinned mesh rendering: per-vertex bone weights through the WASM bridge to the PBR shader",
+        "status": "experimental"
+      },
+      {
+        "capability": "Versioned asset-description language: schema, validation, shape-grammar evaluator, and libraries",
+        "status": "working"
+      },
+      {
+        "capability": "Procedural material graphs baking runtime PBR textures",
+        "status": "working"
+      },
+      {
+        "capability": "Vegetation, prop, vehicle, and weapon generators alongside architecture and characters",
+        "status": "working"
+      },
+      {
+        "capability": "2D sprite, icon, and atlas generators sharing the material graph's texture nodes",
+        "status": "working"
+      },
+      {
+        "capability": "Chunked terrain with materials, splat maps, LOD mesher integration, and seam stitching",
+        "status": "working"
+      },
+      {
+        "capability": "Terrain sculpt/paint brushes with undo and procedural heightfield generation",
+        "status": "working"
+      },
+      {
+        "capability": "Seeded vegetation scattering with mesh/impostor LOD switching",
+        "status": "working"
+      },
+      {
+        "capability": "Voxel block/skylight propagation with bounded incremental relight",
+        "status": "working"
+      },
+      {
+        "capability": "Versioned voxel chunk save format and pure chunk-sync message application",
+        "status": "working"
+      },
+      {
+        "capability": "Localized NavMesh rebaking matching a full rebake field-for-field",
+        "status": "working"
+      },
+      {
+        "capability": "2D grid navigation, string-pulled corridors, and dynamic obstacle rerouting",
+        "status": "working"
+      },
+      {
+        "capability": "2D lights, a general parallax layer, sprite atlases, and a 2D particle adapter",
+        "status": "working"
+      },
+      {
+        "capability": "Anchor, flex, grid, and responsive-breakpoint UI layout",
+        "status": "working"
+      },
+      {
+        "capability": "Full UI widget set: panels, images, dropdowns, and progress bars alongside existing controls",
+        "status": "working"
+      },
+      {
+        "capability": "World-space and XR UI canvases with ray-based hit testing",
+        "status": "working"
+      },
+      {
+        "capability": "Font assets, fallback chains, and outlined/shadowed rich text",
+        "status": "working"
+      },
+      {
+        "capability": "Cached, batched text layout in world and screen space",
+        "status": "working"
+      },
+      {
+        "capability": "XR controllers and hands as first-class input devices, with rebinding",
+        "status": "working"
+      },
+      {
+        "capability": "XR rig: reference-space height, floor calibration, and seated/standing per-eye cameras",
+        "status": "working"
+      },
+      {
+        "capability": "XR haptics queueing, hysteresis-based hand-pose recognition, and capability detection",
+        "status": "working"
+      },
+      {
+        "capability": "AudioWorklet DSP path with a documented main-thread fallback",
+        "status": "experimental"
+      },
+      {
+        "capability": "Networked transforms and server-authoritative rigid-body sync with ownership transfer",
+        "status": "working"
+      },
+      {
+        "capability": "Server-side lag compensation with bounded snapshot rewind",
+        "status": "working"
+      },
+      {
+        "capability": "Networked scene synchronization with held replication for loading clients",
+        "status": "working"
+      },
+      {
+        "capability": "Rooms, matchmaking, authentication hooks, reconnection, and host migration",
+        "status": "working"
+      },
+      {
+        "capability": "Environment cubemaps, prefiltered specular mips, irradiance, and a BRDF LUT for image-based lighting",
+        "status": "experimental"
+      },
+      {
+        "capability": "Depth-projected decals with atlas regions, tint, fade, and angle falloff",
+        "status": "experimental"
+      },
+      {
+        "capability": "Render-to-texture targets with per-layer viewports, resize policy, and read/write cycle detection",
+        "status": "experimental"
+      },
+      {
+        "capability": "Integration: networked characters reconciling root motion against server rigid-body authority",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: XR grabs requesting network ownership with a documented contention policy",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: nav agents driving the physics character motor; AI state driving animator parameters",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: generated assets producing colliders and a baked, linked NavMesh automatically",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: streamed chunks rebaking navigation locally; spatial audio following entity transforms",
+        "status": "working"
+      },
+      {
+        "capability": "Executable open-world showcase: terrain, vegetation, streaming, origin shifts, crowd nav, local rebake",
+        "status": "working"
+      },
+      {
+        "capability": "Executable XR playground showcase: rig, hands, haptics, grabbing, locomotion, world-space UI",
+        "status": "working"
+      },
+      {
+        "capability": "Vapour Script binding coverage test driving every Mirage subsystem from real VS source",
+        "status": "working"
+      }
+    ]
+  },
+  "documentation": {
+    "index": "docs/",
+    "agentGuide": "docs/agent-game-building.md",
+    "architecture": "docs/architecture/overview.md",
+    "mirageAudit": "docs/mirage/audit.md",
+    "miragePlan": "docs/mirage/plan.md",
+    "mirageTasks": "docs/mirage/tasks.md",
+    "files": [
+      "docs/2d-rendering.md",
+      "docs/agent-game-building.md",
+      "docs/ai-navigation.md",
+      "docs/ai-perception.md",
+      "docs/animation.md",
+      "docs/architecture/overview.md",
+      "docs/asset-generation.md",
+      "docs/audio.md",
+      "docs/automation.md",
+      "docs/coastal-city/art-direction.md",
+      "docs/coastal-milestones.md",
+      "docs/combat.md",
+      "docs/crafting.md",
+      "docs/cubegame-port.md",
+      "docs/development.md",
+      "docs/diagnostics.md",
+      "docs/editor.md",
+      "docs/framework.md",
+      "docs/gltf-import.md",
+      "docs/http.md",
+      "docs/hub.md",
+      "docs/input.md",
+      "docs/integration.md",
+      "docs/inventory.md",
+      "docs/loading.md",
+      "docs/math.md",
+      "docs/migration-0.2.5.md",
+      "docs/mirage/audit.md",
+      "docs/mirage/plan.md",
+      "docs/mirage/tasks.md",
+      "docs/multiplayer.md",
+      "docs/narrative-sample.md",
+      "docs/narrative.md",
+      "docs/navigation.md",
+      "docs/networking.md",
+      "docs/open-world-ai-audio.md",
+      "docs/particles.md",
+      "docs/persistence.md",
+      "docs/physics.md",
+      "docs/plugins.md",
+      "docs/product-experience.md",
+      "docs/project-format.md",
+      "docs/release-0.2.0-alpha.md",
+      "docs/rendering-scale.md",
+      "docs/rendering.md",
+      "docs/resources.md",
+      "docs/runtime-loop.md",
+      "docs/scenes.md",
+      "docs/status.md",
+      "docs/terrain.md",
+      "docs/three-migration.md",
+      "docs/ui.md",
+      "docs/vapour-script.md",
+      "docs/world-streaming.md",
+      "docs/xr-locomotion.md",
+      "docs/xr.md"
+    ]
+  }
+}

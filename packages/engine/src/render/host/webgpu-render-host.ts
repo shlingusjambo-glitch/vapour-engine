@@ -3,8 +3,20 @@
  * Owns the lifecycle of the Rust renderer instance: module loading, canvas
  * surface configuration, resource upload, frame submission, and teardown.
  */
-import type { MaterialUpload, MeshUpload, TextureUpload } from "./uploads.js";
-import { validateMaterialUpload, validateTextureUpload } from "./uploads.js";
+import type {
+  EnvironmentUpload,
+  MaterialUpload,
+  MeshUpload,
+  RenderTargetSize,
+  TextureUpload,
+} from "./uploads.js";
+import {
+  validateEnvironmentIntensity,
+  validateEnvironmentUpload,
+  validateMaterialUpload,
+  validateRenderTargetSize,
+  validateTextureUpload,
+} from "./uploads.js";
 import type {
   PackedFrame,
   PostProcessSettings,
@@ -20,11 +32,19 @@ import type {
   RustFrameStats,
 } from "./wasm-contract.js";
 import { defaultModuleLoader } from "./wasm-contract.js";
+import type {
+  GpuParticleDescriptor,
+  GpuParticleHost,
+  GpuParticleHostStats,
+} from "../../particles/gpu-particles.js";
 
 /** Browser presentation host for Vapour's Rust renderer. The DOM owns sizing
  * and animation scheduling; WebGPU objects, shaders, resources, and command
  * encoding remain inside the WASM runtime. */
-export class WebGpuRenderHost extends EventTarget implements RenderHost {
+export class WebGpuRenderHost
+  extends EventTarget
+  implements RenderHost, GpuParticleHost
+{
   readonly #canvas: HTMLCanvasElement;
   readonly #moduleUrl: string;
   readonly #loadModule: WasmModuleLoader;
@@ -44,7 +64,15 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
   readonly #meshes = new Map<string, MeshUpload>();
   readonly #textures = new Map<string, TextureUpload>();
   readonly #materials = new Map<string, MaterialUpload>();
+  readonly #renderTargets = new Map<string, RenderTargetSize>();
   #postProcess: PostProcessSettings = { exposure: 1, toneMapping: "aces" };
+  #gpuCulling = true;
+  #gpuParticles = true;
+  #fixedSize: { width: number; height: number } | undefined;
+  /** The uploaded environment, replayed on rebuild. A sky-derived environment
+   * is not replayed: it was captured from a frame this host no longer has. */
+  #environment: EnvironmentUpload | undefined;
+  #decals: { readonly packed: Float32Array; readonly atlas: string | undefined } | undefined;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -116,12 +144,20 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
       // may reference both materials and meshes.
       for (const [id, texture] of this.#textures)
         this.#submitTexture(id, texture);
+      for (const [id, size] of this.#renderTargets)
+        this.#submitRenderTarget(id, size);
       for (const [id, material] of this.#materials)
         this.#submitMaterial(id, material);
       for (const [id, mesh] of this.#meshes) this.#submitMesh(id, mesh);
+      if (this.#environment !== undefined)
+        this.#submitEnvironment(this.#environment);
+      if (this.#decals !== undefined)
+        this.#submitDecals(this.#decals.packed, this.#decals.atlas);
       if (this.#renderWorldJson !== undefined)
         this.#renderer.set_render_world_json(this.#renderWorldJson);
       this.#submitPostProcess();
+      this.#renderer.set_gpu_culling?.(this.#gpuCulling);
+      this.#renderer.set_gpu_particles?.(this.#gpuParticles);
     } catch (error) {
       this.#renderer.free();
       this.#renderer = undefined;
@@ -226,9 +262,136 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
     return known;
   }
 
+  createRenderTarget(id: string, size: RenderTargetSize): void {
+    validateRenderTargetSize(id, size);
+    if (this.#textures.has(id))
+      throw new Error(`Render target '${id}' collides with an uploaded texture.`);
+    this.#renderTargets.set(id, size);
+    if (this.#renderer !== undefined && !this.#poisoned)
+      this.#submitRenderTarget(id, size);
+  }
+
+  releaseRenderTarget(id: string): boolean {
+    const known = this.#renderTargets.has(id);
+    if (this.#renderer !== undefined && !this.#poisoned && known) {
+      try {
+        this.#renderer.release_render_target?.(id);
+      } catch (error) {
+        throw new Error(
+          `Releasing render target '${id}' failed: ${messageOf(error)}`,
+          { cause: error },
+        );
+      }
+    }
+    this.#renderTargets.delete(id);
+    return known;
+  }
+
+  /** GPU particle systems live entirely in the renderer, so they exist only
+   * while it does: create them after `initialize()`. `GpuParticleSystem`
+   * falls back to a CPU emitter when this reports false. */
+  supportsGpuParticles(): boolean {
+    return (
+      this.#renderer !== undefined &&
+      !this.#poisoned &&
+      this.#renderer.create_particle_system !== undefined
+    );
+  }
+
+  createParticleSystem(id: string, descriptor: GpuParticleDescriptor): void {
+    const renderer = this.#requireParticles();
+    try {
+      renderer.create_particle_system!(id, JSON.stringify(descriptor));
+    } catch (error) {
+      throw new Error(
+        `Vapour's renderer rejected particle system '${id}': ${messageOf(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  updateParticleSystem(
+    id: string,
+    deltaSeconds: number,
+    spawn: number,
+    origin: readonly [number, number, number],
+  ): void {
+    const renderer = this.#requireParticles();
+    try {
+      renderer.update_particle_system!(
+        id,
+        deltaSeconds,
+        spawn,
+        origin[0],
+        origin[1],
+        origin[2],
+      );
+    } catch (error) {
+      throw new Error(
+        `Updating particle system '${id}' failed: ${messageOf(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  clearParticleSystem(id: string): void {
+    this.#requireParticles().clear_particle_system!(id);
+  }
+
+  releaseParticleSystem(id: string): boolean {
+    if (!this.supportsGpuParticles()) return false;
+    return this.#renderer!.release_particle_system!(id);
+  }
+
+  particleSystemStats(id: string): GpuParticleHostStats | undefined {
+    if (!this.supportsGpuParticles()) return undefined;
+    try {
+      return JSON.parse(
+        this.#renderer!.particle_system_stats_json!(id),
+      ) as GpuParticleHostStats;
+    } catch (error) {
+      throw new Error(
+        `Reading particle system '${id}' failed: ${messageOf(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  /** Prefers GPU simulation for particle systems created from now on. */
+  setGpuParticles(enabled: boolean): void {
+    this.#gpuParticles = enabled;
+    if (this.#renderer !== undefined && !this.#poisoned)
+      this.#renderer.set_gpu_particles?.(enabled);
+  }
+
+  #requireParticles(): RustRenderer {
+    if (!this.supportsGpuParticles())
+      throw new Error(
+        "GPU particles need an initialized renderer whose WASM build includes particle support (rebuild with `pnpm build:wasm`).",
+      );
+    return this.#renderer!;
+  }
+
+  #submitRenderTarget(id: string, size: RenderTargetSize): void {
+    const create = this.#renderer!.create_render_target;
+    if (create === undefined) throw staleModule("render targets");
+    try {
+      if ("scale" in size) create.call(this.#renderer!, id, 0, 0, size.scale);
+      else create.call(this.#renderer!, id, size.width, size.height, 0);
+    } catch (error) {
+      throw new Error(
+        `Vapour's renderer rejected render target '${id}': ${messageOf(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
   defineMaterial(id: string, material: MaterialUpload): void {
-    validateMaterialUpload(id, material, (textureId) =>
-      this.#textures.has(textureId),
+    validateMaterialUpload(
+      id,
+      material,
+      (textureId) =>
+        this.#textures.has(textureId) || this.#renderTargets.has(textureId),
     );
     this.#materials.set(id, material);
     if (this.#renderer !== undefined && !this.#poisoned)
@@ -249,6 +412,83 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
     }
     this.#materials.delete(id);
     return known;
+  }
+
+  uploadEnvironment(environment: EnvironmentUpload): void {
+    validateEnvironmentUpload(environment);
+    this.#environment = environment;
+    if (this.#renderer !== undefined && !this.#poisoned)
+      this.#submitEnvironment(environment);
+  }
+
+  deriveEnvironmentFromSky(intensity = 1): void {
+    validateEnvironmentIntensity(intensity);
+    if (this.#renderer === undefined || this.#poisoned)
+      throw new Error(
+        "Deriving an environment from the sky needs an initialized renderer with a submitted frame.",
+      );
+    const derive = this.#renderer.set_environment_from_sky;
+    if (derive === undefined) throw staleModule("environment maps");
+    // Whatever was uploaded no longer describes the live environment.
+    this.#environment = undefined;
+    try {
+      derive.call(this.#renderer, intensity);
+    } catch (error) {
+      throw new Error(
+        `Vapour's renderer could not capture the sky as an environment: ${messageOf(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  clearEnvironment(): void {
+    this.#environment = undefined;
+    if (this.#renderer === undefined || this.#poisoned) return;
+    this.#renderer.clear_environment?.();
+  }
+
+  submitDecals(decals: Float32Array, atlasTexture?: string): void {
+    if (decals.length % DECAL_STRIDE !== 0)
+      throw new Error(
+        `Decals need ${String(DECAL_STRIDE)} values each; received ${String(decals.length)}.`,
+      );
+    if (atlasTexture !== undefined && !this.#textures.has(atlasTexture))
+      throw new Error(`Decal atlas texture '${atlasTexture}' has not been uploaded.`);
+    this.#decals = { packed: decals, atlas: atlasTexture };
+    if (this.#renderer !== undefined && !this.#poisoned)
+      this.#submitDecals(decals, atlasTexture);
+  }
+
+  #submitDecals(decals: Float32Array, atlasTexture: string | undefined): void {
+    const submit = this.#renderer!.set_decals;
+    if (submit === undefined) throw staleModule("decals");
+    try {
+      submit.call(this.#renderer!, atlasTexture ?? "", decals);
+    } catch (error) {
+      throw new Error(
+        `Vapour's renderer rejected the decals: ${messageOf(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  #submitEnvironment(environment: EnvironmentUpload): void {
+    const upload = this.#renderer!.upload_environment_cubemap;
+    if (upload === undefined) throw staleModule("environment maps");
+    try {
+      upload.call(
+        this.#renderer!,
+        environment.faceSize,
+        environment.faces,
+        environment.colorSpace !== "linear",
+        environment.intensity ?? 1,
+      );
+    } catch (error) {
+      throw new Error(
+        `Vapour's renderer rejected the environment map: ${messageOf(error)}`,
+        { cause: error },
+      );
+    }
   }
 
   #submitTexture(id: string, texture: TextureUpload): void {
@@ -355,6 +595,19 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
     return this.#postProcess;
   }
 
+  /** Prefers compute frustum culling (the default) or forces the CPU
+   * fallback. The renderer still needs `capabilities().gpuCulling` for the
+   * compute path; each frame's `RenderStats.culling` says which one ran. */
+  setGpuCulling(enabled: boolean): void {
+    this.#gpuCulling = enabled;
+    if (this.#renderer !== undefined && !this.#poisoned)
+      this.#renderer.set_gpu_culling?.(enabled);
+  }
+
+  gpuCulling(): boolean {
+    return this.#gpuCulling;
+  }
+
   #submitPostProcess(): void {
     const mode = { none: 0, reinhard: 1, aces: 2 }[
       this.#postProcess.toneMapping
@@ -438,6 +691,11 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
         packed.lights,
         packed.layerLightCounts,
         packed.environments,
+        packed.boneOffsets,
+        packed.boneMatrices,
+        packed.layerTargets.length === 0 ? "" : JSON.stringify(packed.layerTargets),
+        packed.viewports,
+        packed.projections,
       );
     } catch (error) {
       throw new Error(
@@ -557,6 +815,10 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
         cpuEncodeMs: rustStats.cpuEncodeMs,
         drawCalls: rustStats.drawCalls,
         triangles: rustStats.triangles,
+        culling: rustStats.gpuCulling ? "gpu" : "cpu",
+        ...(typeof rustStats.culledInstances === "number"
+          ? { culledInstances: rustStats.culledInstances }
+          : {}),
       };
     } catch (error) {
       // A throw from the Rust renderer usually means it panicked, which leaves
@@ -575,7 +837,32 @@ export class WebGpuRenderHost extends EventTarget implements RenderHost {
     }
   }
 
+  /** Pins the drawing buffer to an exact pixel size — an XR eye layout —
+   * instead of following the canvas's CSS size. `undefined` restores
+   * CSS-driven sizing. */
+  setFixedSize(width: number, height: number): void;
+  setFixedSize(width: undefined): void;
+  setFixedSize(width: number | undefined, height?: number): void {
+    if (width === undefined) {
+      this.#fixedSize = undefined;
+    } else {
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || (height as number) < 1)
+        throw new Error("A fixed render size needs positive whole pixel dimensions.");
+      this.#fixedSize = { width, height: height as number };
+    }
+    this.#resizeCanvas();
+    if (this.#renderer !== undefined && !this.#poisoned)
+      this.#renderer.resize(this.#canvas.width, this.#canvas.height);
+  }
+
   #resizeCanvas(): void {
+    if (this.#fixedSize !== undefined) {
+      if (this.#canvas.width !== this.#fixedSize.width || this.#canvas.height !== this.#fixedSize.height) {
+        this.#canvas.width = this.#fixedSize.width;
+        this.#canvas.height = this.#fixedSize.height;
+      }
+      return;
+    }
     const scale = Math.min(devicePixelRatio, 2);
     const width = Math.max(1, Math.floor(this.#canvas.clientWidth * scale));
     const height = Math.max(1, Math.floor(this.#canvas.clientHeight * scale));
@@ -605,6 +892,12 @@ function validatePostEffects(settings: PostProcessSettings): void {
 }
 
 const EMPTY_FLOAT32 = new Float32Array(0);
+
+function staleModule(feature: string): Error {
+  return new Error(
+    `The loaded Vapour WebAssembly module predates ${feature}; rebuild it with \`pnpm build:wasm\`.`,
+  );
+}
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -639,3 +932,4 @@ import {
   packRenderLayers,
   type RenderLayerSubmission,
 } from "../render-layers.js";
+import { DECAL_STRIDE } from "../decals.js";

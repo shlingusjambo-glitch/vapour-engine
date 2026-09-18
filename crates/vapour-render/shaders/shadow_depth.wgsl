@@ -28,8 +28,8 @@ struct Input {
   @location(5) texture_layer: f32,
   @location(6) model_0: vec4<f32>, @location(7) model_1: vec4<f32>,
   @location(8) model_2: vec4<f32>, @location(9) model_3: vec4<f32>,
-  @location(14) instance_base_color: vec4<f32>,
-  @location(15) instance_material: vec4<f32>,
+  @location(10) instance_base_color: vec4<f32>,
+  @location(11) instance_material: vec4<f32>,
 }
 struct Output {
   @builtin(position) position: vec4<f32>,

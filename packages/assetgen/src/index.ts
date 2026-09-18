@@ -14,6 +14,9 @@
  * - **Transform** — placement and repetition operators.
  * - **Profile** — 2D outlines with extrude, revolve, sweep, and loft. This is
  *   the layer that makes real assets describable in text.
+ * - **Describe** — the JSON form of all of it: a versioned document that names
+ *   generators, composes them with groups, refs, and shape grammars, carries
+ *   material graphs, and draws components from reusable libraries.
  *
  * Everything is deterministic and pure: the same description always produces
  * the same geometry, which is what makes generated assets reviewable in version
@@ -30,3 +33,9 @@ export * from "./character.js";
 export * from "./nature.js";
 export * from "./hull.js";
 export * from "./compile.js";
+export * from "./describe.js";
+export * from "./material.js";
+export * from "./props.js";
+export * from "./grammar.js";
+export * from "./sprites-2d.js";
+export * from "./library.js";

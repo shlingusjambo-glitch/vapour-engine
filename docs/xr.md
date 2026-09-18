@@ -48,18 +48,98 @@ durationMs)` with WebXR actuator and dual-rumble support. See
 Supported modes are `inline`, `immersive-vr`, and `immersive-ar`. Reference
 spaces include viewer, local, local-floor, bounded-floor, and unbounded.
 
+## Stereo presentation through WebGPU
+
+`XrPresentation` (`packages/engine/src/render/xr-presentation.ts`) drives the
+real render host once per eye against the WebXR/WebGPU binding. The renderer
+draws into its own canvas, so presenting a headset frame is: lay the eyes out
+side by side in that canvas at their compositor sizes, submit each eye as a
+render layer — the eye's world transform from `XrRig`, its *asymmetric*
+projection, and its rectangle — render, and copy each rectangle into the
+eye's `XRGPUSubImage` (`getViewSubImage` per view).
+
+Two modes, chosen by `probeXrPresentation`, which asks the binding for a
+`texture-array` projection layer:
+
+- **multiview** — accepted: both eyes go to the renderer in **one**
+  submission of two layers and one frame, and each eye is copied into its
+  array slice (`imageIndex`).
+- **two-pass** — refused: a `texture` layer; each eye is its own submission
+  and frame, copied into its viewport of the shared side-by-side texture.
+
+The renderer culls and lights each eye with its own frustum and uniforms in
+both modes; multiview here means one submission and one command stream, not
+a WGSL view-index extension (no browser exposes one to WebGPU yet).
+
+Two details the wiring depends on:
+
+- **Depth range.** `XRView.projectionMatrix` maps depth to [-1, 1]; the Rust
+  renderer expects WebGPU's [0, 1]. Every eye's projection is rewritten
+  (`projectionToWebGpuDepth`) and travels as an explicit per-layer matrix
+  (`RenderLayerOptions.projection`, flag `RENDER_LAYER_HAS_PROJECTION`),
+  which `SurfaceRenderer` uses for the view-projection and the culling
+  planes. The camera record still carries the field of view, near, and far
+  the matrix encodes (`projectionExtent`) because shadow cascades size
+  themselves from those.
+- **Canvas size.** Copies are pixel for pixel, so the presenter pins the
+  host's drawing buffer to the eye layout (`WebGpuRenderHost.setFixedSize`)
+  the first time it sees the sub-image sizes and whenever they change.
+
+### Wiring a session
+
+```ts
+const host = new WebGpuRenderHost(canvas);
+await host.initialize();
+const rig = new XrRig({ referenceSpace: "local-floor" });
+
+// After the XR session starts (see XrSessionManager): the binding needs an
+// xr-compatible device of its own, which is also the copy destination.
+const adapter = await navigator.gpu.requestAdapter({ xrCompatible: true });
+const device = await adapter.requestDevice();
+const binding = new XRGPUBinding(session, device);
+const presentation = new XrPresentation({
+  host,
+  binding,
+  session,
+  copy: canvasSubImageCopier(device, canvas),
+});
+
+// Every XR frame: resolve the rig, then present the scene per eye.
+session.requestAnimationFrame(function onFrame(time, frame) {
+  const viewer = frame.getViewerPose(space);
+  if (viewer !== null) {
+    const rigFrame = rig.resolve(snapshot);         // XrFrameSnapshot from XrSessionManager
+    const result = presentation.present(viewer.views, rigFrame, world.pack(), time);
+    // result.mode, result.submissions (1 or 2), result.eyes[i].textureRect
+  }
+  session.requestAnimationFrame(onFrame);
+});
+```
+
+`XrSessionManager`'s own `webGpuPresentation` option is the clear-only
+compositor from before this work and stays as a smoke test for the binding;
+a game that renders uses `XrPresentation` instead.
+
+Tested without a headset: `xr-presentation.test.ts` drives a
+`HeadlessRenderHost` against a fake `XRGPUBinding` and asserts that two eyes
+produce two submissions with different camera transforms (64 mm apart) and
+the correct viewports ([0, 0, 0.5, 1] and [0.5, 0, 0.5, 1] of a 3664×1920
+canvas, copied into `x = 0` and `x = 1832` of the texture), and that the
+multiview flag produces one submission of two layers copied into slices 0 and
+1. What it cannot prove is the compositor's acceptance of a real frame; that
+remains a hardware gate.
+
 ## Current boundary
 
-The session and tracking layer works. The following are not complete yet:
+The session, tracking, and presentation layers work. The following are not
+complete yet:
 
-- binding a WebGPU-compatible XR swapchain/layer;
-- submitting each XR view through the Rust render graph;
-- multiview/single-pass stereo capability paths;
 - foveation and headset-specific performance controls;
 - grab, ray, teleport, snap/smooth turn, and world-space UI interactors;
 - controller model loading and fallback meshes;
 - editor headset preview, tracking visualization, and XR profiler counters;
-- a browser/headset integration test on real XR hardware.
+- a browser/headset integration test on real XR hardware, including the
+  compositor accepting `XrPresentation`'s frames.
 
 Do not claim a production VR renderer until those gates are implemented and
 verified on hardware. Non-XR games remain usable when WebXR is unavailable.
@@ -166,3 +246,29 @@ teleport onto a ledge an agent could not stand on.
 | `XrGrabController` | `grabDirect`, `grabByRay`, `resolve`, `resolveTwoHanded`, `release` |
 | `XrLocomotion` | `update`, `teleport`, `setPosition`, `position`, `yaw`, `fade` |
 | `teleportArc` | Ballistic arc with injected ground and validity |
+| `XrPresentation` | `present(views, rigFrame, frame, time)` per XR frame; `mode` |
+| `probeXrPresentation`, `canvasSubImageCopier` | Multiview probe; the default canvas → sub-image copy |
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import XrRig, HandPoseRecognizer, XrHaptics
+
+export class Player:
+    func constructor(pulse):
+        self.rig = new XrRig({ referenceSpace: "local-floor", mode: "standing" })
+        self.poses = new HandPoseRecognizer()
+        self.haptics = new XrHaptics(pulse)
+
+    func frame(snapshot):
+        var cameras = self.rig.resolve(snapshot)
+        for source in snapshot.inputs:
+            if source.joints.length > 0:
+                var state = self.poses.update(source)
+                if state.pose == "pinch":
+                    self.haptics.pulse(source.handedness, 0.3, 10)
+        return cameras.eyes
+```

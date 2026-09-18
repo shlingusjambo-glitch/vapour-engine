@@ -242,3 +242,121 @@ immediately while preserving completion events and interface behavior.
 | `ThemeRegistry` | `register`, `setActive`, `resolve`, `token`, `color`, `number` |
 | `defaultTheme`, `highContrastTheme`, `STANDARD_TOKENS` | The shipped themes and token names |
 | `UiAnimator`, `validateUiAnimation` | Serializable transitions shared by screen and world-space UI |
+
+## Layout: flex, grid, anchors, breakpoints
+
+Layout is a pure function from tree plus viewport to rectangles — `UiDocument`
+reads no GPU, DOM, or clock, so the same document drives a screen overlay, a
+world-space quad, and a test asserting exact pixels. Four placement models
+coexist because games need all four:
+
+- **Flex** for rows and columns that share space: `direction`, `wrap`,
+  `flexGrow`/`flexShrink`/`flexBasis`, `justify`, `align`/`alignSelf`, `gap`.
+- **Grid** for aligned tables of controls: `columns`/`rows` tracks that are
+  fixed pixels, `"auto"`, or `{ fraction }`, with `gridArea` spans.
+- **Anchors** for the HUD case — Unity's min/max anchor rect with signed
+  `[left, top, right, bottom]` offsets. Anchored children leave the flow.
+- **Breakpoints** for the responsive case: a style replaced wholesale at or
+  above a viewport width, narrowest first so the widest match wins.
+
+```ts
+const hud = new UiDocument({ id: "root", role: "panel", style: { direction: "column", breakpoints: [{ minWidth: 900, style: { direction: "row" } }] }, children: [
+  { id: "health", role: "progress", style: { anchor: { min: [0, 1], max: [0, 1], offsets: [16, -40, 216, -16] } }, minimum: 0, maximum: 100, value: 70 },
+  { id: "inventory", role: "panel", style: { grid: { columns: [64, 64, { fraction: 1 }], rowGap: 4 } }, children: slots },
+]);
+hud.layout(1920, 1080);
+hud.rect("health"); // { x: 16, y: 1040, width: 200, height: 24 } at any resolution
+```
+
+```py
+from "@vapour/engine" import UiDocument
+
+export func build_hud(slots):
+    var health = { id: "health", role: "progress", style: { anchor: { min: [0, 1], max: [0, 1], offsets: [16, -40, 216, -16] } }, minimum: 0, maximum: 100, value: 70 }
+    var inventory = { id: "inventory", role: "panel", style: { grid: { columns: [64, 64, { fraction: 1 }], rowGap: 4 } }, children: slots }
+    var hud = new UiDocument({ id: "root", role: "panel", style: { direction: "column" }, children: [health, inventory] })
+    hud.layout(1920, 1080)
+    return hud.rect("health")
+```
+
+## Widgets
+
+`UiRole` covers panels, images, text, buttons, toggles (checkboxes), sliders,
+progress bars, and dropdowns. Every interactive role answers the same three
+inputs — pointer (`pointerDown`/`pointerUp`), keyboard/controller
+(`focusNext`, `activateFocused`, `adjust`), and programmatic (`setValue`) — and
+reports through `drainActions()`. A node with `enabled: false` is skipped by
+hit testing and focus, and `activate` on it throws rather than silently
+firing.
+
+Dropdowns are a small state machine: `activate` opens the list, `adjust`
+moves the highlight (or, while closed, changes the selection directly, as a
+settings row does), `activate` again commits, `cancel` restores. The open
+list's rectangles come from `optionRects(id, itemHeight)` rather than from
+child nodes, because a popup escapes its parent's clip and flow.
+
+## World-space and XR UI
+
+`WorldUiCanvas` places a `UiDocument` on a quad: a position and rotation, a
+`pixelsPerUnit` scale (100 means a 400 px document is 4 m wide), and a
+billboard mode — `none`, `full`, or `upright`, which faces the viewer around
+the vertical axis only so a wrist menu does not tilt when the player looks
+down. `hitTest` takes a world-space `Ray` (a mouse ray from
+`screenPointToWorldRay`, or an XR controller's target ray) and returns the
+canvas pixel and node under it; only front-facing hits count.
+`pointerDown`/`pointerUp` forward rays to the document exactly as pointer
+presses, and `quads()` returns every node as world corners for a renderer.
+
+```ts
+const menu = new WorldUiCanvas(document, { position: [0, 1.5, -1.5], pixelsPerUnit: 200, billboard: "upright" });
+menu.face(headPosition);
+const hit = menu.hitTest({ origin: controller.position, direction: controller.forward });
+if (hit?.nodeId === "resume") menu.pointerDown(ray), menu.pointerUp(ray);
+```
+
+## Text: assets, fallback, effects, batching
+
+A `FontAsset` is what a project ships: metrics, glyph rects, kerning, SDF
+parameters, and either inline RGBA8 pixels or a path to them, validated by
+`validateFontAsset` with path-addressed issues; `fontAtlasFromAsset` turns it
+into the `FontAtlas` layout consumes. `resolveFallback` walks a
+`FontFallbackChain` per code point and reports the characters no font in the
+chain can draw — the list a localization pass needs before a player sees a
+box. Rich text gains `[outline=name]` and `[shadow=name]` tags whose
+definitions come from a closed map, and `sdfThresholds` derives the SDF cuts
+that render both from the same glyph quad.
+
+`CachedTextLayout` keys layouts on everything that changes the result, reports
+hits and misses into the counter registry (`text.cacheHits`, `text.cacheMisses`),
+and `batchText` merges every label sharing a material into one mesh.
+`screenTextTransform` and `worldTextTransform` place a batch in pixels or in
+metres from the same cached layout.
+
+```py
+from "@vapour/engine" import CachedTextLayout, batchText, worldTextTransform
+
+export func sign(font, label):
+    var cache = new CachedTextLayout()
+    var layout = cache.layout(font, label, { fontSize: 24 })
+    var batches = batchText([{ layout: layout, position: [0, 0] }])
+    return { mesh: batches[0].mesh, transform: worldTextTransform([0, 2, -3], [0, 0, 0, 1], 100) }
+```
+
+## Performance
+
+`ui-scale.perf.test.ts` lays out a 9,331-node tree in ~5 ms and answers 1,000
+hit tests in ~30 ms on a laptop; hit testing checks rectangle containment
+before walking a node's ancestors, which is what keeps it linear in nodes.
+Layout is linear in nodes; the test asserts the 6× tree costs well under 25×
+the small one so a quadratic regression fails loudly.
+
+## API reference (Mirage)
+
+| Export | Purpose |
+| ------ | ------- |
+| `UiDocument` | `layout`, `rect`, `style`, `hitTest`, `pointerDown/Up`, `focus`, `activate`, `adjust`, dropdown `isOpen`/`select`/`cancel`/`optionRects`, `fraction`, `setValue`, `drainActions` |
+| `anchorRect`, `resolveBreakpoints` | The anchor and breakpoint maths, exposed for tools |
+| `WorldUiCanvas`, `screenPointToWorldRay` | A document on a world quad, ray hit testing, billboarding, world quads |
+| `FontAsset`, `validateFontAsset`, `fontAtlasFromAsset`, `serializeFontAsset`, `parseFontAsset` | Shippable fonts |
+| `resolveFallback`, `sdfThresholds` | Fallback chains and outline/shadow rendering parameters |
+| `CachedTextLayout`, `batchText`, `screenTextTransform`, `worldTextTransform`, `textBatchBounds` | Cached, batched, placed text |

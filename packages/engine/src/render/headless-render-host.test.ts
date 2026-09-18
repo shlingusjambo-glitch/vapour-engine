@@ -145,4 +145,50 @@ describe("HeadlessRenderHost", () => {
       host.defineMaterial("missing", { textures: { baseColor: "nope" } }),
     ).toThrow(/missing texture/);
   });
+
+  it("tracks the environment source without a GPU", async () => {
+    const host = new HeadlessRenderHost();
+    await host.initialize();
+    expect(host.environment()).toBeUndefined();
+    const faces = new Uint8Array(4 * 6);
+    host.uploadEnvironment({ faceSize: 1, faces });
+    expect(host.environment()).toEqual({ faceSize: 1, faces });
+    expect(() =>
+      host.uploadEnvironment({ faceSize: 3, faces }),
+    ).toThrow(/needs 216 RGBA8 bytes/);
+    host.deriveEnvironmentFromSky();
+    expect(host.environment()).toBe("sky");
+    expect(() => host.deriveEnvironmentFromSky(-1)).toThrow(/intensity/);
+    host.clearEnvironment();
+    expect(host.environment()).toBeUndefined();
+  });
+
+  it("tracks render targets and rejects a camera sampling its own target", async () => {
+    const host = new HeadlessRenderHost();
+    await host.initialize();
+    host.createRenderTarget("rt:monitor", { scale: 0.5 });
+    expect(host.renderTargetIds()).toEqual(["rt:monitor"]);
+    expect(() => host.createRenderTarget("rt:bad", { scale: 0 })).toThrow(/scale/);
+    host.defineMaterial("screen", { textures: { baseColor: "rt:monitor" } });
+    const builder = new FrameBuilder(1);
+    builder.draw(
+      "builtin:cube",
+      composeTranslation(new Float32Array(16), 0, 0, 0),
+      { material: "screen" },
+    );
+    expect(() =>
+      host.submitLayers([{ frame: builder.pack(), target: "rt:monitor" }]),
+    ).toThrow(/rt:monitor -> rt:monitor/);
+    expect(() =>
+      host.submitLayers([{ frame: builder.pack(), target: "rt:missing" }]),
+    ).toThrow(/not a render target/);
+    // Rendering the monitor's feed elsewhere and showing it on screen is fine.
+    host.submitLayers([
+      { frame: new FrameBuilder(1).pack(), target: "rt:monitor" },
+      { frame: builder.pack() },
+    ]);
+    expect(() => host.releaseRenderTarget("rt:monitor")).toThrow(/still used/);
+    host.releaseMaterial("screen");
+    expect(host.releaseRenderTarget("rt:monitor")).toBe(true);
+  });
 });

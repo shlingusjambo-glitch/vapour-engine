@@ -136,6 +136,8 @@ thousand-particle buffer.
 | ------ | ------- |
 | `ParticleEmitter` | `play`, `stop`, `clear`, `burst`, `emit`, `update`, `buffers`, `setOrigin`, `reseed`, `stats` |
 | `ParticleSystemPool` | `spawn`, `update`, `active`, `clear` |
+| `GpuParticleSystem` | `ParticleEmitter`'s API on the renderer's compute path; `mode`, `emitter` (fallback), `release` |
+| `gpuParticleDescriptor`, `bakeParticleLuts` | The renderer's descriptor and 32-sample tables from emitter options |
 | Types | `ParticleEmitterOptions`, `ParticleBuffers`, `EmitterShape`, `ParticleStats`, `ParticleCollisionOptions`, `ParticleCollisionHit` |
 
 ## Performance considerations
@@ -145,14 +147,106 @@ thousand-particle buffer.
 - `buffers()` evaluates the size curve and colour gradient per particle per
   call. Call it once per frame, after `update`.
 - Ten thousand particles in one emitter is tested and fine on the CPU. Far
-  beyond that belongs on the GPU, which is what `render.instances` and a compute
-  path are for.
+  beyond that belongs on the GPU: `GpuParticleSystem` above.
 - CPU collision invokes one query per moving particle per update. Use collision
   layers and simple broad-phase queries, reduce collision-enabled capacity, or
-  move very large effects to the GPU path.
+  move very large effects to the GPU path (which has no collision).
+
+## GPU particles
+
+`GpuParticleSystem` has `ParticleEmitter`'s shape — `play`, `stop`, `clear`,
+`burst`, `emit`, `update`, `setOrigin`, `stats`, `aliveCount` — but the
+particles never exist in JavaScript. The renderer (`vapour-render`'s
+`surface/particles.rs`, `shaders/particles_sim.wgsl`, `shaders/particles.wgsl`)
+simulates them in a compute pass and draws them as camera-facing soft discs
+with one indirect draw per system, so ten thousand particles cost this side one
+call per frame: "spawn N at this origin, advance by dt".
+
+```ts
+const host = new WebGpuRenderHost(canvas);
+await host.initialize();
+
+const embers = new GpuParticleSystem(host, {
+  capacity: 20_000,
+  rate: 4000,
+  lifetime: [0.8, 1.6],
+  speed: [0.5, 2],
+  shape: { kind: "cone", angle: 20 },
+  gravity: [0, 1.5, 0],
+  drag: 0.6,
+  size: curve([{ time: 0, value: 0.06 }, { time: 1, value: 0 }]),
+  color: gradientBetween([1, 0.6, 0.1, 1], [0.4, 0, 0, 0]),
+  blend: "additive",
+});
+embers.setOrigin(firePosition);
+embers.play();
+
+// each frame, before the host renders
+embers.update(deltaSeconds);
+```
+
+Emission scheduling — rate, fractional debt, bursts, `duration`/`loop` — runs
+here exactly as `ParticleEmitter` does it. Spawn *sampling* runs in the shader
+and mirrors `ParticleEmitter.#spawn`: the same xorshift32 generator, the same
+draw order per shape, so a seed produces the same burst on both. A real-device
+test (`a_gpu_burst_matches_the_typescript_emitter`) checks one GPU step
+against `crates/vapour-render/src/surface/particles_golden.json`, which
+`gpu-particles.test.ts` regenerates from `ParticleEmitter`; the two are pinned
+to each other.
+
+**Buffer layout** (documented strides, asserted by
+`buffer_layout_matches_the_shader_structs`):
+
+| Buffer | Stride | Contents |
+| ------ | ------ | -------- |
+| Particle | 48 B (3 × vec4) | `position.xyz, age` · `velocity.xyz, lifetime` · `rotation, spin, 0, 0` |
+| Draw args | 16 B | `DrawIndirectArgs`; `vertex_count` 6, `instance_count` = live count |
+| Counters | 16 B | emitted, expired, dropped, reserved (cumulative) |
+| Params | 736 B | gravity/dt, origin/decay, lifetime/speed, shape, angle/spin, counts, 32-sample size LUT, 32-sample RGBA LUT |
+
+Each step: `spawn` appends new particles to the input buffer (claiming slots
+with an atomic on its count; over capacity it gives the slot back and counts a
+drop), then `update` ages, integrates, and compacts survivors into the output
+buffer. The output is drawn and becomes the next input. Size and colour over
+lifetime are baked into 32-sample tables (`bakeParticleLuts`) so the vertex
+shader never evaluates a curve.
+
+**CPU fallback.** `SurfaceRenderer::set_gpu_particles(false)` (host:
+`setGpuParticles(false)`) makes systems created from then on step in Rust
+(`step_cpu`) with the same arithmetic and upload the result; the draw is the
+same. `gpu_steps_match_the_cpu_fallback_for_every_shape` runs three GPU steps
+per shape on a real device and compares them with the CPU step particle for
+particle (relative tolerance 1e-4), counters included; the over-capacity step
+compares counts only, since *which* spawns the GPU drops depends on atomic
+order. When the host cannot create systems at all — before `initialize()`, a
+headless host, a stale WASM build — `GpuParticleSystem` falls back to an
+ordinary `ParticleEmitter`, exposed as `emitter`, whose `buffers()` are the
+caller's to draw.
+
+**What the GPU path does not know.** The population never leaves the device,
+so on the GPU path `stats()` reports `emitted`/`expired`/`dropped` as
+`undefined` and `aliveCount` is an *upper bound*: everything spawned less than
+the maximum lifetime ago, capped at capacity. It reaches zero exactly when the
+system is certainly empty, which is what pooling needs. The Rust CPU path
+reports all four exactly. Collision and trails are CPU-emitter features and
+are not accepted by `GpuParticleSystemOptions`.
 
 ## Multiplayer considerations
 
 Do not replicate particles. Replicate the **event** — "explosion at this point
 with this seed" — and let each client run the same deterministic simulation.
 That is a few dozen bytes instead of thousands of positions per frame.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import ParticleEmitter
+
+export func sparks(position):
+    var emitter = new ParticleEmitter({ capacity: 256, rate: 200, lifetime: [0.3, 0.6], speed: [2, 4] })
+    emitter.update(1 / 60)
+    return emitter.aliveCount
+```

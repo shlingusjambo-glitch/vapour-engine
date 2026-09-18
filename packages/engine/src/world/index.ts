@@ -4,6 +4,9 @@
  * this barrel exists so subsystem boundaries stay explicit inside the package.
  */
 export * from "./terrain.js";
+export * from "./terrain-chunks.js";
+export * from "./terrain-sculpt.js";
+export * from "./vegetation.js";
 export * from "./world-streaming.js";
 export * from "./persistent-streaming.js";
 export * from "./large-world.js";

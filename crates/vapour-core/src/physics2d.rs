@@ -7,7 +7,18 @@ use rapier2d::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::PhysicsEventKind;
+use crate::{CombineRule, PhysicsEventKind, PhysicsMaterial};
+
+impl From<CombineRule> for CoefficientCombineRule {
+    fn from(value: CombineRule) -> Self {
+        match value {
+            CombineRule::Average => Self::Average,
+            CombineRule::Min => Self::Min,
+            CombineRule::Max => Self::Max,
+            CombineRule::Multiply => Self::Multiply,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +62,14 @@ pub struct PhysicsBodyDescriptor2d {
     pub sensor: bool,
     pub layer: u32,
     pub mask: u32,
+    /// A material registered with [`PhysicsWorld2d::define_material`]. It
+    /// replaces `friction` and `restitution` and supplies the combine rules.
+    #[serde(default)]
+    pub material: Option<String>,
+    #[serde(default)]
+    pub friction_combine: CombineRule,
+    #[serde(default)]
+    pub restitution_combine: CombineRule,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,6 +157,10 @@ pub enum PhysicsError2d {
     ZeroRayDirection,
     #[error("convex polygon needs at least three finite, non-collinear points")]
     InvalidPolygon,
+    #[error("physics material name cannot be empty")]
+    EmptyMaterialName,
+    #[error("unknown physics material '{0}'")]
+    UnknownMaterial(String),
 }
 
 /// Rust-owned 2D rigid-body world. Stable IDs, rather than Rapier arena
@@ -146,6 +169,7 @@ pub struct PhysicsWorld2d {
     inner: PhysicsWorld,
     bodies: HashMap<u64, (RigidBodyHandle, ColliderHandle)>,
     collider_ids: HashMap<ColliderHandle, u64>,
+    materials: HashMap<String, PhysicsMaterial>,
     collision_send: Sender<CollisionEvent>,
     collision_recv: Receiver<CollisionEvent>,
     force_send: Sender<ContactForceEvent>,
@@ -169,6 +193,7 @@ impl PhysicsWorld2d {
             inner,
             bodies: HashMap::new(),
             collider_ids: HashMap::new(),
+            materials: HashMap::new(),
             collision_send,
             collision_recv,
             force_send,
@@ -187,11 +212,73 @@ impl PhysicsWorld2d {
         self.bodies.len()
     }
 
+    /// Registers a named surface, replacing any material of the same name.
+    /// See [`crate::PhysicsWorld3d::define_material`] for the semantics.
+    pub fn define_material(&mut self, material: PhysicsMaterial) -> Result<(), PhysicsError2d> {
+        if material.name.trim().is_empty() {
+            return Err(PhysicsError2d::EmptyMaterialName);
+        }
+        non_negative(material.friction, "material friction")?;
+        non_negative(material.restitution, "material restitution")?;
+        self.materials.insert(material.name.clone(), material);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn material(&self, name: &str) -> Option<&PhysicsMaterial> {
+        self.materials.get(name)
+    }
+
+    #[must_use]
+    pub fn material_count(&self) -> usize {
+        self.materials.len()
+    }
+
+    /// Re-surfaces an existing collider and wakes its body.
+    pub fn set_material(&mut self, id: u64, name: &str) -> Result<(), PhysicsError2d> {
+        let material = self
+            .materials
+            .get(name)
+            .ok_or_else(|| PhysicsError2d::UnknownMaterial(name.to_owned()))?
+            .clone();
+        let (body, handle) = *self
+            .bodies
+            .get(&id)
+            .ok_or(PhysicsError2d::UnknownBody(id))?;
+        let collider = self
+            .inner
+            .colliders
+            .get_mut(handle)
+            .ok_or(PhysicsError2d::UnknownBody(id))?;
+        collider.set_friction(material.friction);
+        collider.set_restitution(material.restitution);
+        collider.set_friction_combine_rule(material.friction_combine.into());
+        collider.set_restitution_combine_rule(material.restitution_combine.into());
+        if let Some(body) = self.inner.bodies.get_mut(body) {
+            body.wake_up(true);
+        }
+        Ok(())
+    }
+
     pub fn insert(&mut self, descriptor: PhysicsBodyDescriptor2d) -> Result<(), PhysicsError2d> {
         validate_descriptor(&descriptor)?;
         if self.bodies.contains_key(&descriptor.id) {
             return Err(PhysicsError2d::DuplicateBody(descriptor.id));
         }
+        let surface = match &descriptor.material {
+            Some(name) => self
+                .materials
+                .get(name)
+                .ok_or_else(|| PhysicsError2d::UnknownMaterial(name.clone()))?
+                .clone(),
+            None => PhysicsMaterial {
+                name: String::new(),
+                friction: descriptor.friction,
+                restitution: descriptor.restitution,
+                friction_combine: descriptor.friction_combine,
+                restitution_combine: descriptor.restitution_combine,
+            },
+        };
         let mut body = match descriptor.body_type {
             BodyType2d::Static => RigidBodyBuilder::fixed(),
             BodyType2d::Dynamic => RigidBodyBuilder::dynamic(),
@@ -215,8 +302,10 @@ impl PhysicsWorld2d {
         );
         let collider = collider_builder(&descriptor.shape)?
             .density(descriptor.density)
-            .friction(descriptor.friction)
-            .restitution(descriptor.restitution)
+            .friction(surface.friction)
+            .restitution(surface.restitution)
+            .friction_combine_rule(surface.friction_combine.into())
+            .restitution_combine_rule(surface.restitution_combine.into())
             .sensor(descriptor.sensor)
             .collision_groups(groups)
             .active_events(ActiveEvents::COLLISION_EVENTS)
@@ -715,7 +804,69 @@ mod tests {
             sensor: false,
             layer: 1,
             mask: u32::MAX,
+            material: None,
+            friction_combine: CombineRule::Average,
+            restitution_combine: CombineRule::Average,
         }
+    }
+
+    #[test]
+    fn material_resurfaces_a_collider() {
+        let mut world = PhysicsWorld2d::default();
+        world
+            .define_material(PhysicsMaterial {
+                name: "ice".into(),
+                friction: 0.02,
+                restitution: 0.1,
+                friction_combine: CombineRule::Min,
+                restitution_combine: CombineRule::Max,
+            })
+            .unwrap();
+        assert_eq!(
+            world.define_material(PhysicsMaterial {
+                name: "  ".into(),
+                friction: 0.0,
+                restitution: 0.0,
+                friction_combine: CombineRule::Average,
+                restitution_combine: CombineRule::Average,
+            }),
+            Err(PhysicsError2d::EmptyMaterialName)
+        );
+        let mut descriptor = body(
+            1,
+            BodyType2d::Dynamic,
+            1.0,
+            ColliderShape2d::Circle { radius: 0.5 },
+        );
+        descriptor.material = Some("ice".into());
+        world.insert(descriptor).unwrap();
+        assert_eq!(world.material_count(), 1);
+        assert_eq!(
+            world.set_material(1, "mud"),
+            Err(PhysicsError2d::UnknownMaterial("mud".into()))
+        );
+        let mut unknown = body(
+            2,
+            BodyType2d::Dynamic,
+            1.0,
+            ColliderShape2d::Circle { radius: 0.5 },
+        );
+        unknown.material = Some("mud".into());
+        assert_eq!(
+            world.insert(unknown),
+            Err(PhysicsError2d::UnknownMaterial("mud".into()))
+        );
+        let (_, collider) = world.bodies[&1];
+        let collider = world.inner.colliders.get(collider).unwrap();
+        assert!((collider.friction() - 0.02).abs() < 1e-6);
+        assert_eq!(
+            collider.friction_combine_rule(),
+            CoefficientCombineRule::Min
+        );
+        assert_eq!(
+            collider.restitution_combine_rule(),
+            CoefficientCombineRule::Max
+        );
     }
 
     #[test]

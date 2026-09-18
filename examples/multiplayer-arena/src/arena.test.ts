@@ -173,6 +173,50 @@ describe("session", () => {
     expect(clients[1]!.client.others()).toHaveLength(0);
   });
 
+  it("keeps a dropped player's avatar and hands it back on resume; holds the world until the scene is loaded", () => {
+    const network = new LoopbackNetwork();
+    const server = new ArenaServer(network.endpoint(0), { scene: "arena", reconnectGraceTicks: 20 });
+    const spawns: number[] = [];
+    const one = new ArenaClient(network.endpoint(1), { onSpawn: (entity) => spawns.push(entity.id) });
+    one.join({ name: "one" });
+    let now = 0;
+    const clients = [one];
+    const run = (ticks: number): void => {
+      for (let step = 0; step < ticks; step += 1) {
+        now += 50;
+        network.advance(now);
+        server.step(1 / 20);
+        network.advance(now);
+        for (const client of clients) client.receive();
+        network.advance(now);
+      }
+    };
+    run(2);
+    // Admitted and spawned server-side, but told nothing until the scene is loaded.
+    const avatar = server.playerEntity(1)!;
+    expect(spawns).toEqual([]);
+    one.ready();
+    run(2);
+    expect(spawns).toEqual([avatar]);
+    expect(one.self()).toBeDefined();
+
+    server.net.setState(avatar, { ...server.net.entity(avatar)!.state, health: 40 });
+    const session = server.drop(1)!;
+    clients.length = 0;
+    run(5);
+    expect(server.net.entity(avatar)?.state.health).toBe(40);
+
+    const back = new ArenaClient(network.endpoint(2));
+    back.resume(session);
+    clients.push(back);
+    run(2);
+    back.ready();
+    run(2);
+    expect(server.playerEntity(2)).toBe(avatar);
+    expect(server.playerEntity(1)).toBeUndefined();
+    expect(back.self()?.health).toBe(40);
+  });
+
   it("keeps clients converged through latency, jitter, and packet loss", () => {
     const { server, clients, run } = arena({
       clients: 2,

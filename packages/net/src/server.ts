@@ -11,6 +11,7 @@
  * tick they describe, and reconciliation is expressed entirely in ticks. Wall
  * time appears only in the transport.
  */
+import { SnapshotHistory, type SnapshotHistoryOptions } from "./lag-compensation.js";
 import {
   applyDelta, decodeMessage, deltaState, encodeMessage, messageSize, quantizeState,
   type NetMessage, type NetState, type NetworkId, type SnapshotMessage,
@@ -31,11 +32,80 @@ export interface ServerConnection {
   lastInputTick: number;
   /** Last snapshot tick this client acknowledged. */
   acknowledgedTick: number;
+  /**
+   * The server tick this client most recently said it was rendering.
+   *
+   * Pass it as `HitRequest.viewTick`: it is the exact tick the player aimed
+   * at, which no latency estimate reproduces.
+   */
+  viewTick: number;
   /** Entities currently relevant to this client. */
   interest: Set<NetworkId>;
   /** What this client last knew about each entity, for delta compression. */
   baseline: Map<NetworkId, NetState>;
   bytesSent: number;
+  /** Token this client presents to resume after a drop. */
+  readonly session: string;
+  /** Whatever the authentication hook returned, or `null` when there is none. */
+  identity: NetState | null;
+  /**
+   * Whether the client has finished loading the scene.
+   *
+   * Replication is held while this is false. Sending a joining client snapshots
+   * of a world it has not loaded yet produces spawns for entities it cannot
+   * place, and the client has to either buffer them or throw them away.
+   */
+  ready: boolean;
+  /** Which `setScene` generation `ready` refers to. */
+  sceneGeneration: number;
+  /** Scene load progress in `[0, 1]`, as the client last reported it. */
+  sceneProgress: number;
+}
+
+/** What an authentication hook is told about a joining peer. */
+export interface AuthRequest {
+  readonly connection: ConnectionId;
+  readonly credentials: NetState;
+  /** A session token the peer is trying to resume, if any. */
+  readonly resume: string | undefined;
+}
+
+/**
+ * The verdict on a joining peer.
+ *
+ * There is deliberately no built-in crypto here. Whether a token is a signed
+ * JWT, a row in a database, or a shared secret is a decision only the game can
+ * make, and an engine that guessed would be both wrong and impossible to
+ * replace.
+ */
+export type AuthDecision =
+  | { readonly ok: true; readonly identity?: NetState }
+  | { readonly ok: false; readonly reason: string };
+
+/** Called once per `join`, before the connection exists. Must be synchronous:
+ * an async hook would let unauthenticated peers queue work on the server. */
+export type AuthHook = (request: AuthRequest) => AuthDecision;
+
+/** A connection kept alive across a drop, awaiting reconnection. */
+interface SuspendedSession {
+  readonly connection: ServerConnection;
+  readonly expiresAtTick: number;
+}
+
+/** Everything needed to stand a server back up somewhere else. */
+export interface HostHandover {
+  readonly tick: number;
+  readonly nextEntityId: number;
+  readonly scene: string | undefined;
+  readonly sceneGeneration: number;
+  readonly entities: readonly {
+    readonly id: NetworkId;
+    readonly prefab: string;
+    readonly owner: ConnectionId | null;
+    readonly state: NetState;
+  }[];
+  /** Session tokens, so surviving clients reconnect into their own entities. */
+  readonly sessions: readonly { readonly connection: ConnectionId; readonly session: string; readonly identity: NetState | null }[];
 }
 
 /** Decides which entities a connection should be told about. */
@@ -57,6 +127,31 @@ export interface ServerOptions {
   readonly onInput?: (connection: ServerConnection, tick: number, payload: NetState) => void;
   /** Called for RPCs a client sent to the server. */
   readonly onRpc?: (connection: ServerConnection, name: string, args: readonly unknown[], id: NetworkId | null) => void;
+  /**
+   * Vets joining peers. When set, the server accepts nothing but `join` from an
+   * unknown peer and admits it only if this returns `ok`.
+   */
+  readonly authenticate?: AuthHook;
+  /** Issues session tokens. Defaults to `crypto.randomUUID()`; override for tests. */
+  readonly sessionToken?: (connection: ConnectionId) => string;
+  /**
+   * Ticks a dropped client's entities survive while it reconnects.
+   *
+   * Zero — the default — despawns immediately, which is right for an arena and
+   * wrong for anything with an inventory: a player who loses Wi-Fi for four
+   * seconds should not lose their character.
+   */
+  readonly reconnectGraceTicks?: number;
+  /** Scene clients must load before replication starts. */
+  readonly scene?: string;
+  /** Called as clients report scene load progress. */
+  readonly onSceneProgress?: (connection: ServerConnection, progress: number, ready: boolean) => void;
+  /** Called when a client is admitted, including on a resumed session. */
+  readonly onJoin?: (connection: ServerConnection, resumed: boolean) => void;
+  /** Called when a client's grace window expires without a reconnection. */
+  readonly onSessionExpired?: (connection: ServerConnection) => void;
+  /** Records every tick into `server.history` for lag-compensated hit checks. */
+  readonly lagCompensation?: Omit<SnapshotHistoryOptions, "tickRate"> | boolean;
 }
 
 export interface ServerStats {
@@ -65,6 +160,10 @@ export interface ServerStats {
   readonly entities: number;
   readonly bytesSent: number;
   readonly snapshotsSent: number;
+  /** Clients dropped but still inside their reconnection grace window. */
+  readonly suspended: number;
+  /** Clients admitted but still loading the scene, so not yet replicated to. */
+  readonly loading: number;
 }
 
 /** Distance-based interest: a common default that scales to large worlds. */
@@ -87,25 +186,57 @@ export function radiusInterest(radius: number, positionOf: (state: NetState) => 
 
 export class NetworkServer {
   readonly #transport: Transport;
-  readonly #options: Required<Omit<ServerOptions, "onInput" | "onRpc" | "interest">> & Pick<ServerOptions, "onInput" | "onRpc" | "interest">;
+  readonly #options: ServerOptions & { readonly tickRate: number; readonly decimals: number };
   readonly #connections = new Map<ConnectionId, ServerConnection>();
   readonly #entities = new Map<NetworkId, NetworkEntity>();
+  readonly #suspended = new Map<string, SuspendedSession>();
+  readonly #graceTicks: number;
+  readonly #issueToken: (connection: ConnectionId) => string;
+  readonly #history: SnapshotHistory | undefined;
   #tick = 0;
   #nextEntityId = 1;
   #bytesSent = 0;
   #snapshotsSent = 0;
+  #scene: string | undefined;
+  #sceneGeneration = 0;
+  #tokenCounter = 0;
 
   constructor(transport: Transport, options: ServerOptions = {}) {
     const tickRate = options.tickRate ?? 20;
     if (!Number.isInteger(tickRate) || tickRate < 1) throw new Error("A server tick rate must be a whole number of at least 1.");
     const decimals = options.decimals ?? 3;
     if (!Number.isInteger(decimals) || decimals < 0) throw new Error("Quantization decimals must be a non-negative whole number.");
+    const graceTicks = options.reconnectGraceTicks ?? 0;
+    if (!Number.isInteger(graceTicks) || graceTicks < 0) throw new Error("A reconnection grace window must be a non-negative whole number of ticks.");
+    if (options.scene !== undefined && !options.scene.trim()) throw new Error("A server scene must be a non-empty name.");
     this.#transport = transport;
     this.#options = { tickRate, decimals, ...options };
+    this.#graceTicks = graceTicks;
+    this.#issueToken = options.sessionToken ?? ((connection) => this.#defaultToken(connection));
+    this.#scene = options.scene;
+    if (options.scene !== undefined) this.#sceneGeneration = 1;
+    this.#history =
+      options.lagCompensation === undefined || options.lagCompensation === false
+        ? undefined
+        : new SnapshotHistory({ ...(options.lagCompensation === true ? {} : options.lagCompensation), tickRate });
   }
 
   get tick(): number {
     return this.#tick;
+  }
+
+  /** Recorded world history, when `lagCompensation` is enabled. */
+  get history(): SnapshotHistory | undefined {
+    return this.#history;
+  }
+
+  /** Scene every client must load before it is replicated to. */
+  get scene(): string | undefined {
+    return this.#scene;
+  }
+
+  get sceneGeneration(): number {
+    return this.#sceneGeneration;
   }
 
   get connections(): readonly ServerConnection[] {
@@ -125,18 +256,25 @@ export class NetworkServer {
   }
 
   /** Accepts a client and sends it a welcome plus the world it can see. */
-  addConnection(id: ConnectionId): ServerConnection {
+  addConnection(id: ConnectionId, identity: NetState | null = null): ServerConnection {
     if (this.#connections.has(id)) throw new Error(`Connection ${id} is already connected.`);
     const connection: ServerConnection = {
       id,
       lastInputTick: -1,
       acknowledgedTick: -1,
+      viewTick: -1,
       interest: new Set(),
       baseline: new Map(),
       bytesSent: 0,
+      session: this.#issueToken(id),
+      identity,
+      ready: this.#scene === undefined,
+      sceneGeneration: this.#sceneGeneration,
+      sceneProgress: this.#scene === undefined ? 1 : 0,
     };
     this.#connections.set(id, connection);
-    this.#send(connection, { type: "welcome", connection: id, tick: this.#tick, tickRate: this.#options.tickRate });
+    this.#welcome(connection, false);
+    this.#options.onJoin?.(connection, false);
     return connection;
   }
 
@@ -145,10 +283,96 @@ export class NetworkServer {
     const connection = this.#connections.get(id);
     if (!connection) return;
     this.#connections.delete(id);
+    this.#suspended.delete(connection.session);
     for (const entity of [...this.#entities.values()]) {
       if (entity.owner === id) this.despawn(entity.id);
     }
     this.#transport.disconnect(id);
+  }
+
+  /**
+   * Drops a client but keeps its entities for `reconnectGraceTicks`.
+   *
+   * The alternative — despawn now, respawn on reconnect — loses whatever the
+   * entity was carrying and teleports it back to a spawn point, which is why
+   * every game that has an inventory ends up implementing this.
+   *
+   * With no grace configured this is exactly {@link removeConnection}, so the
+   * cheap behaviour stays the default rather than the one you have to opt into.
+   */
+  dropConnection(id: ConnectionId): string | undefined {
+    const connection = this.#connections.get(id);
+    if (!connection) return undefined;
+    if (this.#graceTicks <= 0) {
+      this.removeConnection(id);
+      return undefined;
+    }
+    this.#connections.delete(id);
+    this.#suspended.set(connection.session, { connection, expiresAtTick: this.#tick + this.#graceTicks });
+    this.#transport.disconnect(id);
+    return connection.session;
+  }
+
+  /** Sessions dropped but still resumable. */
+  get suspendedSessions(): readonly string[] {
+    return [...this.#suspended.keys()];
+  }
+
+  /**
+   * Rebinds a suspended session onto a new transport connection.
+   *
+   * Ownership follows the session, not the connection id: a reconnecting player
+   * almost never gets the same socket back, so every entity they owned is
+   * re-pointed at the new id. Interest and baseline are *not* restored — the
+   * client reloads the scene and gets full spawns, because a delta against a
+   * baseline the client may never have received would corrupt its world.
+   */
+  resumeConnection(session: string, id: ConnectionId): ServerConnection | undefined {
+    const suspended = this.#suspended.get(session);
+    if (!suspended) return undefined;
+    if (this.#connections.has(id)) throw new Error(`Connection ${id} is already connected.`);
+    this.#suspended.delete(session);
+    const previous = suspended.connection.id;
+    const connection: ServerConnection = {
+      ...suspended.connection,
+      id,
+      interest: new Set(),
+      baseline: new Map(),
+      lastInputTick: -1,
+      acknowledgedTick: -1,
+      viewTick: -1,
+      ready: this.#scene === undefined,
+      sceneGeneration: this.#sceneGeneration,
+      sceneProgress: this.#scene === undefined ? 1 : 0,
+    };
+    this.#connections.set(id, connection);
+    for (const entity of this.#entities.values()) {
+      if (entity.owner === previous) entity.owner = id;
+    }
+    this.#welcome(connection, true);
+    this.#options.onJoin?.(connection, true);
+    return connection;
+  }
+
+  /**
+   * Tells every client to load a scene and holds replication until they have.
+   *
+   * Interest and baselines are cleared, so once a client reports ready it gets
+   * a full spawn for everything it can see rather than a delta against the
+   * previous scene's world.
+   */
+  setScene(scene: string): void {
+    if (!scene.trim()) throw new Error("A scene name must not be empty.");
+    this.#scene = scene;
+    this.#sceneGeneration += 1;
+    for (const connection of this.#connections.values()) {
+      connection.ready = false;
+      connection.sceneProgress = 0;
+      connection.sceneGeneration = this.#sceneGeneration;
+      connection.interest = new Set();
+      connection.baseline = new Map();
+      this.#send(connection, { type: "sceneLoad", scene, generation: this.#sceneGeneration, tick: this.#tick });
+    }
   }
 
   /** Creates a replicated entity. */
@@ -191,7 +415,13 @@ export class NetworkServer {
     if (owner !== null && !this.#connections.has(owner)) {
       throw new Error(`Cannot give entity ${id} to connection ${owner}, which is not connected.`);
     }
+    if (entity.owner === owner) return;
     entity.owner = owner;
+    // Every client that knows the entity is told, so `local` flips on the new
+    // owner's client and prediction starts there rather than a snapshot later.
+    for (const connection of this.#connections.values()) {
+      if (connection.interest.has(id)) this.#send(connection, { type: "ownership", id, owner, tick: this.#tick });
+    }
   }
 
   /** Sends an RPC to one client, or to all of them. */
@@ -217,20 +447,42 @@ export class NetworkServer {
   receive(): void {
     for (const packet of this.#transport.receive()) {
       const message = decodeMessage(packet.data);
+      if (!message) continue;
       const connection = this.#connections.get(packet.from);
-      // A message from an unknown peer is discarded rather than throwing: one
-      // malformed or stale packet must not take down a server.
-      if (!message || !connection) continue;
-      if (message.type === "input") {
+      // `join` is the one message an unknown peer may send, and only when the
+      // game supplied an authentication hook to judge it. Everything else from
+      // an unknown peer is discarded rather than throwing: one malformed or
+      // stale packet must not take down a server.
+      if (!connection) {
+        if (message.type === "join") this.#handleJoin(packet.from, message.credentials, message.resume);
+        continue;
+      }
+      if (message.type === "sceneProgress") {
+        // A report for a scene the server has already moved past is stale:
+        // acting on it would mark a client ready for the wrong world.
+        if (message.generation !== connection.sceneGeneration) continue;
+        connection.sceneProgress = Math.min(1, Math.max(0, message.progress));
+        connection.ready = message.ready === true;
+        this.#options.onSceneProgress?.(connection, connection.sceneProgress, connection.ready);
+      } else if (message.type === "input") {
         // Stale inputs are dropped. Accepting an out-of-order input would let a
         // client rewind its own history.
         if (message.tick <= connection.lastInputTick) continue;
         connection.lastInputTick = message.tick;
+        this.#noteViewTick(connection, message.viewTick);
         this.#options.onInput?.(connection, message.tick, message.payload);
       } else if (message.type === "ack") {
         if (message.tick > connection.acknowledgedTick) connection.acknowledgedTick = message.tick;
       } else if (message.type === "rpc") {
+        this.#noteViewTick(connection, message.viewTick);
         this.#options.onRpc?.(connection, message.name, message.args, message.id);
+      } else if (message.type === "ownership") {
+        // Only the current owner may hand an entity off. Anyone else asking is
+        // a client trying to take a physics object it does not hold.
+        const entity = this.#entities.get(message.id);
+        if (!entity || entity.owner !== connection.id) continue;
+        if (message.owner !== null && !this.#connections.has(message.owner)) continue;
+        this.setOwner(message.id, message.owner);
       }
     }
   }
@@ -245,17 +497,162 @@ export class NetworkServer {
    */
   step(): void {
     this.#tick += 1;
-    for (const connection of this.#connections.values()) this.#sendSnapshot(connection);
+    this.#history?.record(this.#tick, this.#entities.values());
+    this.#reapSessions();
+    for (const connection of this.#connections.values()) {
+      // A client still loading the scene is not sent snapshots: spawns for a
+      // world it has not loaded are spawns it must buffer or discard.
+      if (!connection.ready) continue;
+      this.#sendSnapshot(connection);
+    }
   }
 
   stats(): ServerStats {
+    let loading = 0;
+    for (const connection of this.#connections.values()) if (!connection.ready) loading += 1;
     return {
       tick: this.#tick,
       connections: this.#connections.size,
       entities: this.#entities.size,
       bytesSent: this.#bytesSent,
       snapshotsSent: this.#snapshotsSent,
+      suspended: this.#suspended.size,
+      loading,
     };
+  }
+
+  /**
+   * Everything a successor host needs to continue this world.
+   *
+   * Entity ids and the next-id counter come along deliberately: reissuing ids
+   * would make every client's reference to an entity mean something different
+   * after the migration.
+   */
+  capture(): HostHandover {
+    return {
+      tick: this.#tick,
+      nextEntityId: this.#nextEntityId,
+      scene: this.#scene,
+      sceneGeneration: this.#sceneGeneration,
+      entities: [...this.#entities.values()].map((entity) => ({
+        id: entity.id,
+        prefab: entity.prefab,
+        owner: entity.owner,
+        state: entity.state,
+      })),
+      sessions: [
+        ...[...this.#connections.values()].map((connection) => ({ connection: connection.id, session: connection.session, identity: connection.identity })),
+        ...[...this.#suspended.values()].map(({ connection }) => ({ connection: connection.id, session: connection.session, identity: connection.identity })),
+      ],
+    };
+  }
+
+  /**
+   * Adopts a captured world, the other half of host migration.
+   *
+   * Sessions arrive suspended rather than connected: the surviving clients have
+   * not reached this server yet, and they resume by presenting their token.
+   */
+  adopt(handover: HostHandover): void {
+    if (this.#entities.size > 0) throw new Error("A server can only adopt a handover before it owns any entities.");
+    this.#tick = handover.tick;
+    this.#nextEntityId = handover.nextEntityId;
+    this.#scene = handover.scene;
+    this.#sceneGeneration = handover.sceneGeneration;
+    for (const entity of handover.entities) {
+      this.#entities.set(entity.id, { id: entity.id, prefab: entity.prefab, owner: entity.owner, state: entity.state });
+    }
+    // The successor's own client is already connected and already has the
+    // world loaded — it was playing in it a moment ago — so it inherits the new
+    // scene generation as ready rather than being told to reload.
+    for (const connection of this.#connections.values()) {
+      connection.sceneGeneration = this.#sceneGeneration;
+      connection.ready = true;
+      connection.sceneProgress = 1;
+    }
+    const grace = Math.max(this.#graceTicks, 1);
+    for (const record of handover.sessions) {
+      if (this.#connections.has(record.connection)) continue;
+      this.#suspended.set(record.session, {
+        connection: {
+          id: record.connection,
+          lastInputTick: -1,
+          acknowledgedTick: -1,
+          viewTick: -1,
+          interest: new Set(),
+          baseline: new Map(),
+          bytesSent: 0,
+          session: record.session,
+          identity: record.identity,
+          ready: this.#scene === undefined,
+          sceneGeneration: this.#sceneGeneration,
+          sceneProgress: this.#scene === undefined ? 1 : 0,
+        },
+        expiresAtTick: this.#tick + grace,
+      });
+    }
+  }
+
+  #noteViewTick(connection: ServerConnection, viewTick: number | undefined): void {
+    // A view tick from the future is a lie or a bug; either way the present is
+    // the most it can mean.
+    if (viewTick === undefined || !Number.isFinite(viewTick)) return;
+    connection.viewTick = Math.min(viewTick, this.#tick);
+  }
+
+  #defaultToken(connection: ConnectionId): string {
+    this.#tokenCounter += 1;
+    const random = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : String(Math.random()).slice(2);
+    return `${String(connection)}-${String(this.#tokenCounter)}-${random}`;
+  }
+
+  #welcome(connection: ServerConnection, resumed: boolean): void {
+    this.#send(connection, {
+      type: "welcome",
+      connection: connection.id,
+      tick: this.#tick,
+      tickRate: this.#options.tickRate,
+      session: connection.session,
+      resumed,
+      ...(this.#scene === undefined ? {} : { scene: this.#scene, sceneGeneration: this.#sceneGeneration }),
+    });
+  }
+
+  /**
+   * Admits, resumes, or rejects an unknown peer's `join`.
+   *
+   * Resumption is tried before authentication: a token proves the peer already
+   * passed the hook once, and asking it to authenticate again would make every
+   * reconnect cost a credential round trip.
+   */
+  #handleJoin(from: ConnectionId, credentials: NetState, resume: string | undefined): void {
+    if (resume !== undefined && this.#suspended.has(resume)) {
+      this.resumeConnection(resume, from);
+      return;
+    }
+    const hook = this.#options.authenticate;
+    if (hook === undefined) {
+      this.addConnection(from);
+      return;
+    }
+    const decision = hook({ connection: from, credentials, resume });
+    if (!decision.ok) {
+      this.#transport.send(from, encodeMessage({ type: "reject", reason: decision.reason }), { reliable: true });
+      this.#transport.disconnect(from);
+      return;
+    }
+    this.addConnection(from, decision.identity ?? null);
+  }
+
+  #reapSessions(): void {
+    for (const [token, suspended] of this.#suspended) {
+      if (this.#tick < suspended.expiresAtTick) continue;
+      this.#suspended.delete(token);
+      for (const entity of [...this.#entities.values()]) {
+        if (entity.owner === suspended.connection.id) this.despawn(entity.id);
+      }
+      this.#options.onSessionExpired?.(suspended.connection);
+    }
   }
 
   #sendSnapshot(connection: ServerConnection): void {

@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+amcp/__init__.py
+amcp/__main__.py
+amcp/server.py
+amcp.egg-info/PKG-INFO
+amcp.egg-info/SOURCES.txt
+amcp.egg-info/dependency_links.txt
+amcp.egg-info/entry_points.txt
+amcp.egg-info/requires.txt
+amcp.egg-info/top_level.txt

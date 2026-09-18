@@ -6,3 +6,5 @@
 export * from "./text-2d.js";
 export * from "./rich-text.js";
 export * from "./font-import.js";
+export * from "./font-asset.js";
+export * from "./text-batch.js";

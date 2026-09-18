@@ -103,3 +103,27 @@ replacement with `captureState`/`restoreState` and rollback when replacement
 startup fails. The generated source map records
 source ownership but does not yet provide statement-accurate mappings. These
 are explicit release gates; VS is not yet described as stable.
+
+## Binding coverage
+
+VS has no per-subsystem binding layer to maintain: it compiles to ESM and
+receives the same engine objects TypeScript does. What Mirage adds is proof
+that this holds for every subsystem. `runVapourScript` (in `@vapour/engine`)
+compiles a script, resolves its `@vapour/engine` imports against the live
+engine, and executes it; `vs-bindings.test.ts` drives UI layout and widgets,
+world-space UI, font fallback and text batching, the XR rig, hand poses and
+haptics, XR input bindings, ragdoll blending and physics interpolation, voxel
+chunk serialization, and 2D lighting from real VS source and asserts on what
+the engine did. A subsystem whose exports VS syntax cannot reach fails that
+test, which is the binding contract.
+
+```py
+from "@vapour/engine" import UiDocument, WorldUiCanvas
+
+export func build():
+    var ok = { id: "ok", role: "button", style: { flexGrow: 1 } }
+    var ui = new UiDocument({ id: "root", role: "panel", style: { direction: "row" }, children: [ok] })
+    ui.layout(200, 40)
+    var canvas = new WorldUiCanvas(ui, { position: [0, 0, -2], pixelsPerUnit: 100 })
+    return canvas.hitTest({ origin: [0, 0, 0], direction: [0, 0, -1] }).nodeId
+```

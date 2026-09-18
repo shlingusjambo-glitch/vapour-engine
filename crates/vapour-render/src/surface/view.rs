@@ -14,6 +14,10 @@ pub(crate) struct ViewState {
     pub(crate) orthographic_size: f32,
     pub(crate) near: f32,
     pub(crate) far: f32,
+    /// An explicit projection (an XR eye's asymmetric frustum) that replaces
+    /// the one derived from the fields above. Those still describe the
+    /// frustum's extent for shadow cascades.
+    pub(crate) projection_override: Option<Mat4>,
     /// Every light affecting this view, in submission order.
     pub(crate) lights: Vec<GpuLight>,
     pub(crate) clear_color: [f32; 4],
@@ -35,6 +39,7 @@ impl Default for ViewState {
             orthographic_size: 10.0,
             near: 0.1,
             far: 1_000.0,
+            projection_override: None,
             lights: default_light_rig(),
             clear_color: [0.012, 0.018, 0.035, 1.0],
             fog_color_mode: [0.0; 4],
@@ -62,6 +67,9 @@ impl ViewState {
 /// The lighting a view gets when a frame submits none: a key light plus enough
 /// fill that unlit faces read as shaded rather than as holes.
 pub(crate) fn projection_matrix(view: &ViewState, aspect: f32) -> Mat4 {
+    if let Some(projection) = view.projection_override {
+        return projection;
+    }
     match view.projection {
         CameraProjection::Perspective => Mat4::perspective_rh(
             view.field_of_view_degrees.to_radians(),

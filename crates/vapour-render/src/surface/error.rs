@@ -11,10 +11,24 @@ use crate::{CameraProjection, GraphError, RenderWorldError, ShaderError, mesh::M
 pub enum SurfaceRendererError {
     #[error("post-processing settings are invalid: {reason}")]
     InvalidPostProcess { reason: &'static str },
+    #[error("environment map is invalid: {reason}")]
+    InvalidEnvironmentMap { reason: String },
+    #[error("decal {index} is invalid: {reason}")]
+    InvalidDecal { index: usize, reason: String },
+    #[error("render target '{id}' is not usable: {reason}")]
+    InvalidRenderTarget { id: String, reason: &'static str },
+    #[error("layer {layer} renders into '{id}', which is not a render target")]
+    UnknownRenderTarget { layer: usize, id: String },
+    #[error(
+        "render target '{target}' is sampled by a layer that renders into it ({path}); a camera cannot read the texture it writes"
+    )]
+    RenderTargetCycle { target: String, path: String },
     #[error("the selected WebGPU adapter cannot present to this canvas")]
     UnsupportedSurface,
     #[error("failed to build the standard material shader: {0}")]
     Shader(#[from] ShaderError),
+    #[error("{0}")]
+    Particles(#[from] super::particles::ParticleError),
     #[error("failed to compile the renderer frame graph: {0}")]
     Graph(#[from] GraphError),
     #[error("invalid render world: {0}")]
@@ -75,6 +89,14 @@ pub enum SurfaceRendererError {
     InvalidCameraProjection { value: f32 },
     #[error("'{field}' submits {actual} lights, but a view may carry at most {limit}")]
     TooManyLights {
+        field: &'static str,
+        actual: usize,
+        limit: usize,
+    },
+    #[error(
+        "'{field}' submits {actual} bone matrices, but the frame's bone palette holds at most {limit}"
+    )]
+    TooManyBones {
         field: &'static str,
         actual: usize,
         limit: usize,

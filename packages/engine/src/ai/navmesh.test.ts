@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AREA,
   NavMesh,
+  type NavSpan,
   bakeNavMesh,
   deserializeNavMesh,
   navMeshLineOfSight,
   serializeNavMesh,
   smoothPath,
   type NavMeshInput,
+  type NavMeshSettings,
 } from "./navmesh.js";
 
 /** A flat square of ground in the XZ plane, centred on the origin.
@@ -456,5 +458,179 @@ describe("dynamic navigation obstacles", () => {
     expect(() =>
       navmesh.setObstacle({ id: "", position: [0, 0, 0], radius: 1 }),
     ).toThrow(/non-empty id/);
+  });
+});
+
+describe("NavMesh.rebakeRegion (M65 localized rebaking)", () => {
+  /** One axis-aligned rectangle of ground, at a given height and area. */
+  interface Quad {
+    readonly x0: number;
+    readonly z0: number;
+    readonly x1: number;
+    readonly z1: number;
+    readonly y: number;
+    readonly area?: number;
+  }
+
+  function combineQuads(quads: readonly Quad[]): NavMeshInput {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const areas: number[] = [];
+    for (const quad of quads) {
+      const base = positions.length / 3;
+      positions.push(
+        quad.x0,
+        quad.y,
+        quad.z0,
+        quad.x1,
+        quad.y,
+        quad.z0,
+        quad.x1,
+        quad.y,
+        quad.z1,
+        quad.x0,
+        quad.y,
+        quad.z1,
+      );
+      indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+      areas.push(quad.area ?? DEFAULT_AREA.id, quad.area ?? DEFAULT_AREA.id);
+    }
+    return {
+      positions: new Float32Array(positions),
+      indices: new Uint32Array(indices),
+      areas: new Uint8Array(areas),
+    };
+  }
+
+  const SETTINGS: NavMeshSettings = {
+    cellSize: 1,
+    cellHeight: 0.5,
+    agentRadius: 0.4, // erodeCells = 1
+    agentMaxClimb: 2,
+    agentHeight: 1.8,
+    maxSlopeDegrees: 45,
+  };
+
+  // A 40x40 field. The middle 6x6 (the "region") is where all the action is:
+  // a hole (removed geometry), a raised platform (added geometry at a new
+  // height), and an area-cost change (modified geometry) — one of each kind
+  // of edit the report is supposed to count.
+  const FIELD = combineQuads([{ x0: 0, z0: 0, x1: 40, z1: 40, y: 0 }]);
+  const REGION = { minX: 17, maxX: 23, minZ: 17, maxZ: 23 };
+
+  const AFTER = combineQuads([
+    // Frame around the region: unchanged ground.
+    { x0: 0, z0: 23, x1: 40, z1: 40, y: 0 }, // top
+    { x0: 0, z0: 0, x1: 40, z1: 17, y: 0 }, // bottom
+    { x0: 0, z0: 17, x1: 17, z1: 23, y: 0 }, // left
+    { x0: 23, z0: 17, x1: 40, z1: 23, y: 0 }, // right
+    // Inside the region: a 3x3 grid of 2-unit cells.
+    // (17,17)-(19,19): hole — omitted entirely.
+    { x0: 19, z0: 17, x1: 21, z1: 19, y: 0 }, // ground
+    { x0: 21, z0: 17, x1: 23, z1: 19, y: 0 }, // ground
+    { x0: 17, z0: 19, x1: 19, z1: 21, y: 0 }, // ground
+    { x0: 19, z0: 19, x1: 21, z1: 21, y: 1 }, // raised platform (added)
+    { x0: 21, z0: 19, x1: 23, z1: 21, y: 0 }, // ground
+    { x0: 17, z0: 21, x1: 19, z1: 23, y: 0 }, // ground
+    { x0: 19, z0: 21, x1: 21, z1: 23, y: 0 }, // ground
+    { x0: 21, z0: 21, x1: 23, z1: 23, y: 0, area: 2 }, // area change (modified)
+  ]);
+
+  const AREAS = [DEFAULT_AREA, { id: 2, name: "mud", cost: 2 }];
+
+  /** Canonical, index-independent form of a navmesh: spans identified by
+   * position, links identified by their target's position. This is what
+   * "byte-identical, field by field" has to mean for a graph whose numeric
+   * ids are an implementation detail of build order. */
+  function canonicalize(mesh: NavMesh) {
+    const spans = mesh.spans();
+    const byIndex = new Map(spans.map((span) => [span.index, span]));
+    const keyOf = (span: NavSpan) => `${span.x}|${span.z}|${span.y}`;
+    return spans
+      .map((span) => ({
+        key: keyOf(span),
+        area: span.area,
+        neighbours: span.links
+          .map((link) => keyOf(byIndex.get(link)!))
+          .sort(),
+      }))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  }
+
+  it("matches a full rebake of the same final geometry, field by field", () => {
+    const before = bakeNavMesh(FIELD, SETTINGS, AREAS);
+    const fullAfter = bakeNavMesh(AFTER, SETTINGS, AREAS);
+
+    const report = before.rebakeRegion(AFTER, REGION);
+
+    // The critical test: a localized rebake over the modified region must be
+    // indistinguishable from rebaking everything from scratch.
+    expect(canonicalize(report.navmesh)).toEqual(canonicalize(fullAfter));
+    expect(report.navmesh.spanCount).toBe(fullAfter.spanCount);
+
+    // Real locality: only a slice of the world was reprocessed.
+    // eslint-disable-next-line no-console
+    console.log(
+      `M65 localized rebake: ${report.spansRebaked} re-baked of ${report.spansTotal} total ` +
+        `(added ${report.spansAdded}, removed ${report.spansRemoved}, modified ${report.spansModified})`,
+    );
+    expect(report.spansRebaked).toBeLessThan(report.spansTotal);
+    expect(report.spansAdded).toBeGreaterThan(0);
+    expect(report.spansRemoved).toBeGreaterThan(0);
+    expect(report.spansModified).toBeGreaterThan(0);
+  });
+
+  it("preserves span data outside the touched region untouched", () => {
+    const before = bakeNavMesh(FIELD, SETTINGS, AREAS);
+    const report = before.rebakeRegion(AFTER, REGION);
+
+    const farAwaySpan = before
+      .spans()
+      .find((span) => span.x === 2 && span.z === 2);
+    expect(farAwaySpan).toBeDefined();
+    const stillThere = report.navmesh
+      .spans()
+      .find(
+        (span) =>
+          span.x === farAwaySpan!.x &&
+          span.z === farAwaySpan!.z &&
+          span.y === farAwaySpan!.y,
+      );
+    expect(stillThere).toBeDefined();
+    expect(stillThere!.area).toBe(farAwaySpan!.area);
+  });
+
+  it("keeps paths crossing the touched region's boundary connected", () => {
+    const before = bakeNavMesh(FIELD, SETTINGS, AREAS);
+    const report = before.rebakeRegion(AFTER, REGION);
+    // A path that must walk straight through the (still-ground) frame edge
+    // right next to the region should remain fully connected end to end.
+    const result = report.navmesh.findPath([2, 0, 2], [38, 0, 38]);
+    expect(result.status).toBe("complete");
+  });
+
+  it("re-snaps off-mesh links whose endpoint survives and drops ones that don't", () => {
+    const before = bakeNavMesh(FIELD, SETTINGS, AREAS);
+    // A link entirely inside the region, anchored on a span the edit removes
+    // (the hole) — must be dropped.
+    expect(before.addOffMeshLink({ from: [17.5, 0, 17.5], to: [2, 0, 2] })).toBe(
+      true,
+    );
+    // A link far from the region, on a span that survives untouched.
+    expect(before.addOffMeshLink({ from: [2, 0, 2], to: [3, 0, 3] })).toBe(
+      true,
+    );
+
+    const report = before.rebakeRegion(AFTER, REGION);
+    expect(report.offMeshLinksInvalidated).toBeGreaterThan(0);
+    // The untouched-area link is still there and still resolves to real spans.
+    const links = report.navmesh.offMeshLinks();
+    expect(
+      links.some(
+        (link) =>
+          Math.abs(link.from[0] - 2.5) < 1e-6 &&
+          Math.abs(link.to[0] - 3.5) < 1e-6,
+      ),
+    ).toBe(true);
   });
 });

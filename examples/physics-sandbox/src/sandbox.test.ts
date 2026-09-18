@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DebugDraw } from "@vapour/engine";
 import { PhysicsSandbox, SimpleWorld } from "./sandbox.js";
 
 /** Presses an action for one update, then releases it. */
@@ -208,5 +209,16 @@ describe("SimpleWorld", () => {
   it("ignores commands for bodies that no longer exist", () => {
     const world = new SimpleWorld();
     expect(() => world.applyCommands([{ type: "applyImpulse", id: 999, impulse: [1, 0, 0] }])).not.toThrow();
+  });
+});
+
+describe("debug drawing", () => {
+  it("draws one wireframe box per body via @vapour/engine's physics debug module", () => {
+    const sandbox = new PhysicsSandbox({ propCount: 3 });
+    const draw = new DebugDraw();
+    sandbox.debugDraw(draw);
+    // ground + 2 door + 2 pendulum + 3 props = 8 bodies, 12 lines each.
+    expect(sandbox.world.bodies).toHaveLength(8);
+    expect(draw.count).toBe(8 * 12);
   });
 });

@@ -158,3 +158,19 @@ nobody notices until a real session.
 
 `AudioZones.sample` scans every zone. That is fine for the tens of zones a level
 has; a world with thousands needs a spatial index in front of it.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import standardBusLayout, perceptualGain
+
+export func volume_from_slider(slider):
+    # Sliders are perceptual: 0.5 is "half as loud", not half the gain.
+    return perceptualGain(slider)
+
+export func buses():
+    return standardBusLayout().map((bus) => bus.name)
+```

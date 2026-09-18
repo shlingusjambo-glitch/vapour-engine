@@ -125,6 +125,7 @@
         "nav-debug",
         "navigation",
         "navmesh",
+        "open-world",
         "perception"
       ]
     },
@@ -148,6 +149,8 @@
       "modules": [
         "asset-database",
         "gltf-import",
+        "gltf-resources",
+        "gltf-runtime",
         "loading-progress",
         "mesh-library",
         "project-templates"
@@ -159,7 +162,9 @@
       "path": "packages/engine/src/audio",
       "modules": [
         "audio",
-        "mixer"
+        "mixer",
+        "open-world-audio",
+        "worklet"
       ]
     },
     {
@@ -187,6 +192,7 @@
         "counters",
         "debug-draw",
         "logging",
+        "open-world-debug",
         "overlay"
       ]
     },
@@ -226,11 +232,25 @@
       ]
     },
     {
+      "name": "integration",
+      "summary": "Integration: glue that proves separately-tested subsystems compose.",
+      "path": "packages/engine/src/integration",
+      "modules": [
+        "audio-follow",
+        "generated-assets",
+        "nav-locomotion",
+        "networked-character",
+        "networked-grab",
+        "streaming-navmesh"
+      ]
+    },
+    {
       "name": "net",
       "summary": "Networking: transports and the low-level session layer.",
       "path": "packages/engine/src/net",
       "modules": [
-        "networking"
+        "networking",
+        "scene-sync"
       ]
     },
     {
@@ -238,6 +258,7 @@
       "summary": "Particles and visual effects.",
       "path": "packages/engine/src/particles",
       "modules": [
+        "gpu-particles",
         "particles"
       ]
     },
@@ -255,9 +276,16 @@
       "path": "packages/engine/src/physics",
       "modules": [
         "interaction",
+        "locomotion-3d",
+        "native-test-world",
         "physics-2d",
         "physics-3d",
+        "physics-debug",
+        "physics-interpolation",
+        "physics-worker-protocol",
+        "ragdoll-blend",
         "scene-physics",
+        "vehicle-3d",
         "voxel-physics"
       ]
     },
@@ -267,10 +295,12 @@
       "path": "packages/engine/src/render",
       "modules": [
         "culling",
+        "decals",
         "editor-camera",
         "environment",
         "headless-render-host",
         "incremental-render-world",
+        "lighting-2d",
         "lights",
         "lod",
         "picking",
@@ -279,7 +309,8 @@
         "render-world",
         "shadows",
         "sprite-2d",
-        "ui-renderer-2d"
+        "ui-renderer-2d",
+        "xr-presentation"
       ]
     },
     {
@@ -307,7 +338,8 @@
       "path": "packages/engine/src/scripting",
       "modules": [
         "scripting",
-        "vapour-script"
+        "vapour-script",
+        "vs-bindings"
       ]
     },
     {
@@ -315,9 +347,11 @@
       "summary": "Text: font import, atlas generation, and text mesh construction.",
       "path": "packages/engine/src/text",
       "modules": [
+        "font-asset",
         "font-import",
         "rich-text",
-        "text-2d"
+        "text-2d",
+        "text-batch"
       ]
     },
     {
@@ -325,6 +359,10 @@
       "summary": "Tilemaps: storage, collision, and rendering data for 2D games.",
       "path": "packages/engine/src/tilemap",
       "modules": [
+        "atlas-2d",
+        "nav-2d",
+        "parallax-2d",
+        "particles-2d",
         "tilemap"
       ]
     },
@@ -337,7 +375,8 @@
         "navigation",
         "theme",
         "ui",
-        "widgets"
+        "widgets",
+        "world-ui"
       ]
     },
     {
@@ -347,7 +386,9 @@
       "modules": [
         "voxel-block-registry",
         "voxel-generation",
+        "voxel-lighting",
         "voxel-mesher",
+        "voxel-save",
         "voxel-world"
       ]
     },
@@ -357,8 +398,12 @@
       "path": "packages/engine/src/world",
       "modules": [
         "large-world",
+        "persistent-streaming",
         "procedural-noise",
         "terrain",
+        "terrain-chunks",
+        "terrain-sculpt",
+        "vegetation",
         "world-streaming"
       ]
     },
@@ -369,15 +414,18 @@
       "modules": [
         "interaction",
         "xr",
-        "xr-locomotion"
+        "xr-capabilities",
+        "xr-hands",
+        "xr-locomotion",
+        "xr-rig"
       ]
     }
   ],
   "capabilities": {
     "counts": {
-      "working": 102,
-      "experimental": 34,
-      "planned": 5
+      "working": 136,
+      "experimental": 42,
+      "planned": 2
     },
     "source": "docs/status.md",
     "entries": [
@@ -930,20 +978,176 @@
         "status": "working"
       },
       {
-        "capability": "Compound colliders, constraint editor, and physics debug draw",
-        "status": "planned"
+        "capability": "Physics materials, friction/restitution combine rules, mass properties, and centre of mass",
+        "status": "working"
       },
       {
-        "capability": "Heightfield terrain mesh, native collider, sampling, and deterministic generation",
+        "capability": "Runtime pose/ragdoll blending with activation and recovery ramps",
         "status": "experimental"
       },
       {
-        "capability": "Terrain sculpt/paint editor, vegetation, LOD, and streaming integration",
-        "status": "planned"
+        "capability": "Raycast vehicles: wheel suspension, steering, and engine/brake torque",
+        "status": "experimental"
       },
       {
-        "capability": "Animation graph and navmesh baking/crowds",
-        "status": "planned"
+        "capability": "Worker-side physics stepping over SharedArrayBuffer with a same-thread fallback and interpolation",
+        "status": "experimental"
+      },
+      {
+        "capability": "Physics debug rendering and a body/contact/step-time statistics block",
+        "status": "working"
+      },
+      {
+        "capability": "Point and spot shadows sharing the directional shadow atlas, with light-priority eviction",
+        "status": "experimental"
+      },
+      {
+        "capability": "Skinned mesh rendering: per-vertex bone weights through the WASM bridge to the PBR shader",
+        "status": "experimental"
+      },
+      {
+        "capability": "Versioned asset-description language: schema, validation, shape-grammar evaluator, and libraries",
+        "status": "working"
+      },
+      {
+        "capability": "Procedural material graphs baking runtime PBR textures",
+        "status": "working"
+      },
+      {
+        "capability": "Vegetation, prop, vehicle, and weapon generators alongside architecture and characters",
+        "status": "working"
+      },
+      {
+        "capability": "2D sprite, icon, and atlas generators sharing the material graph's texture nodes",
+        "status": "working"
+      },
+      {
+        "capability": "Chunked terrain with materials, splat maps, LOD mesher integration, and seam stitching",
+        "status": "working"
+      },
+      {
+        "capability": "Terrain sculpt/paint brushes with undo and procedural heightfield generation",
+        "status": "working"
+      },
+      {
+        "capability": "Seeded vegetation scattering with mesh/impostor LOD switching",
+        "status": "working"
+      },
+      {
+        "capability": "Voxel block/skylight propagation with bounded incremental relight",
+        "status": "working"
+      },
+      {
+        "capability": "Versioned voxel chunk save format and pure chunk-sync message application",
+        "status": "working"
+      },
+      {
+        "capability": "Localized NavMesh rebaking matching a full rebake field-for-field",
+        "status": "working"
+      },
+      {
+        "capability": "2D grid navigation, string-pulled corridors, and dynamic obstacle rerouting",
+        "status": "working"
+      },
+      {
+        "capability": "2D lights, a general parallax layer, sprite atlases, and a 2D particle adapter",
+        "status": "working"
+      },
+      {
+        "capability": "Anchor, flex, grid, and responsive-breakpoint UI layout",
+        "status": "working"
+      },
+      {
+        "capability": "Full UI widget set: panels, images, dropdowns, and progress bars alongside existing controls",
+        "status": "working"
+      },
+      {
+        "capability": "World-space and XR UI canvases with ray-based hit testing",
+        "status": "working"
+      },
+      {
+        "capability": "Font assets, fallback chains, and outlined/shadowed rich text",
+        "status": "working"
+      },
+      {
+        "capability": "Cached, batched text layout in world and screen space",
+        "status": "working"
+      },
+      {
+        "capability": "XR controllers and hands as first-class input devices, with rebinding",
+        "status": "working"
+      },
+      {
+        "capability": "XR rig: reference-space height, floor calibration, and seated/standing per-eye cameras",
+        "status": "working"
+      },
+      {
+        "capability": "XR haptics queueing, hysteresis-based hand-pose recognition, and capability detection",
+        "status": "working"
+      },
+      {
+        "capability": "AudioWorklet DSP path with a documented main-thread fallback",
+        "status": "experimental"
+      },
+      {
+        "capability": "Networked transforms and server-authoritative rigid-body sync with ownership transfer",
+        "status": "working"
+      },
+      {
+        "capability": "Server-side lag compensation with bounded snapshot rewind",
+        "status": "working"
+      },
+      {
+        "capability": "Networked scene synchronization with held replication for loading clients",
+        "status": "working"
+      },
+      {
+        "capability": "Rooms, matchmaking, authentication hooks, reconnection, and host migration",
+        "status": "working"
+      },
+      {
+        "capability": "Environment cubemaps, prefiltered specular mips, irradiance, and a BRDF LUT for image-based lighting",
+        "status": "experimental"
+      },
+      {
+        "capability": "Depth-projected decals with atlas regions, tint, fade, and angle falloff",
+        "status": "experimental"
+      },
+      {
+        "capability": "Render-to-texture targets with per-layer viewports, resize policy, and read/write cycle detection",
+        "status": "experimental"
+      },
+      {
+        "capability": "Integration: networked characters reconciling root motion against server rigid-body authority",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: XR grabs requesting network ownership with a documented contention policy",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: nav agents driving the physics character motor; AI state driving animator parameters",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: generated assets producing colliders and a baked, linked NavMesh automatically",
+        "status": "working"
+      },
+      {
+        "capability": "Integration: streamed chunks rebaking navigation locally; spatial audio following entity transforms",
+        "status": "working"
+      },
+      {
+        "capability": "Executable open-world showcase: terrain, vegetation, streaming, origin shifts, crowd nav, local rebake",
+        "status": "working"
+      },
+      {
+        "capability": "Executable XR playground showcase: rig, hands, haptics, grabbing, locomotion, world-space UI",
+        "status": "working"
+      },
+      {
+        "capability": "Vapour Script binding coverage test driving every Mirage subsystem from real VS source",
+        "status": "working"
       }
     ]
   },
@@ -964,6 +1168,8 @@
       "docs/asset-generation.md",
       "docs/audio.md",
       "docs/automation.md",
+      "docs/coastal-city/art-direction.md",
+      "docs/coastal-milestones.md",
       "docs/combat.md",
       "docs/crafting.md",
       "docs/cubegame-port.md",
@@ -975,9 +1181,11 @@
       "docs/http.md",
       "docs/hub.md",
       "docs/input.md",
+      "docs/integration.md",
       "docs/inventory.md",
       "docs/loading.md",
       "docs/math.md",
+      "docs/migration-0.2.5.md",
       "docs/mirage/audit.md",
       "docs/mirage/plan.md",
       "docs/mirage/tasks.md",
@@ -986,6 +1194,7 @@
       "docs/narrative.md",
       "docs/navigation.md",
       "docs/networking.md",
+      "docs/open-world-ai-audio.md",
       "docs/particles.md",
       "docs/persistence.md",
       "docs/physics.md",

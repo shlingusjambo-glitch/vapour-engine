@@ -96,6 +96,12 @@ impl ShaderLibrary {
         library.register("vapour.shadow-depth", crate::SHADOW_DEPTH_SHADER)?;
         library.register("vapour.tonemap", crate::TONEMAP_SHADER)?;
         library.register("vapour.procedural-sky", crate::PROCEDURAL_SKY_SHADER)?;
+        library.register("vapour.decal", crate::DECAL_SHADER)?;
+        library.register("vapour.ibl-prefilter", crate::IBL_PREFILTER_SHADER)?;
+        library.register("vapour.ibl-brdf-lut", crate::IBL_BRDF_LUT_SHADER)?;
+        library.register("vapour.cull-instances", crate::CULL_INSTANCES_SHADER)?;
+        library.register("vapour.particles-sim", crate::PARTICLES_SIM_SHADER)?;
+        library.register("vapour.particles", crate::PARTICLES_SHADER)?;
         Ok(library)
     }
 
@@ -146,6 +152,26 @@ mod tests {
             shader
                 .source
                 .contains("var output_color = ambient + direct + emission;")
+        );
+        let cull = library.get("vapour.cull-instances").unwrap();
+        assert!(
+            cull.entry_points
+                .contains(&("cull".into(), ShaderStage::Compute))
+        );
+        let sim = library.get("vapour.particles-sim").unwrap();
+        assert!(
+            sim.entry_points
+                .contains(&("spawn".into(), ShaderStage::Compute))
+        );
+        assert!(
+            sim.entry_points
+                .contains(&("update".into(), ShaderStage::Compute))
+        );
+        let particles = library.get("vapour.particles").unwrap();
+        assert!(
+            particles
+                .entry_points
+                .contains(&("vertex_main".into(), ShaderStage::Vertex))
         );
         let tonemap = library.get("vapour.tonemap").unwrap();
         assert!(

@@ -1,0 +1,6 @@
+import {GameRuntime,composeMatrix,WebGpuRenderHost} from '@vapour/engine';
+const c=document.querySelector<HTMLCanvasElement>('#vapour-game')!;
+const original=GPUAdapter.prototype.requestDevice;
+GPUAdapter.prototype.requestDevice=async function(desc){const device=await original.call(this,desc);device.addEventListener('uncapturederror',(event)=>{const text=document.createElement('pre');text.textContent=event.error.message;text.style.cssText='position:fixed;inset:15px;background:#210;color:white;white-space:pre-wrap';document.body.append(text);console.error(event.error.message);});return device;};
+const host=new WebGpuRenderHost(c,{moduleUrl:new URL('vapour_runtime.js',document.baseURI).href});host.setGpuCulling(false);host.setPostProcess({exposure:1,toneMapping:'none',antiAliasing:'none'});
+const runtime=new GameRuntime(c,{update(g){const m=new Float32Array(16);composeMatrix(m,[0,0,5],[0,0,0,1],[1,1,1]);g.frame.setCamera(m,60,.1,100);g.frame.setEnvironment({clearColor:[.2,.4,.7,1]});g.frame.lights.addAmbient([1,1,1],2);composeMatrix(m,[0,0,0],[0,0,0,1],[1,1,1]);g.frame.draw('builtin:cube',m,{color:[1,.3,.05,1]});}},{host,moduleUrl:new URL('vapour_runtime.js',document.baseURI).href});void runtime.start();

@@ -237,3 +237,15 @@ to send positions. `nav-agent.test.ts` asserts this directly.
 so a dense crowd costs `O(agents × maxNeighbours × samples)` rather than
 `O(agents²)`. `avoidanceSamples` (12) trades smoothness for time; lower it for
 background crowds.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import findPath
+
+export func route(graph, start, goal):
+    return findPath(start, goal, { key: graph.key, neighbours: graph.neighbours, heuristic: graph.heuristic, maxVisited: 5000 })
+```

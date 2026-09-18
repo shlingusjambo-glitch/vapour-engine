@@ -268,6 +268,56 @@ capsules. The two agreeing is what stops a ragdoll folding through its own body.
 Connections whose bones are missing are skipped rather than failing, so a
 partial skeleton produces a partial ragdoll instead of an error.
 
+## Ragdoll runtime blend
+
+`ragdollJoints` builds the constraints once. What happens every frame after
+that — a hit ramping a character from its animated pose into physics, and
+physics ramping back into animation once it recovers — is `ragdoll-blend.ts`.
+
+```ts
+import { RagdollBlendController } from "@vapour/engine";
+
+const blend = new RagdollBlendController(ragdollBoneNames, {
+  rampInSeconds: 0.25,
+  rampOutSeconds: 0.4,
+});
+
+// On a hit: hand physics its starting velocity, matching the animation's
+// momentum at this instant, then start ramping in.
+const targets = blend.activate(skeleton, poseNow, posePrevious, dt);
+for (const target of targets) {
+  physics.setKinematicTarget(bodyIdFor(target.bone), target.position, target.rotation);
+  physics.setLinearVelocity(bodyIdFor(target.bone), target.linearVelocity);
+  physics.setAngularVelocity(bodyIdFor(target.bone), target.angularVelocity);
+  physics.setBodyType(bodyIdFor(target.bone), "dynamic"); // now the solver owns it
+}
+
+// Every frame while blend.phase !== "animated":
+const pose = blend.blend(skeleton, animatedPose, ragdollBodyTransforms);
+skinningMatrices(skeleton, pose, inverseBind);
+blend.advance(dt);
+
+// When the character should stand back up:
+blend.recover();
+// blend.advance(dt) returns true the frame recovery completes, at which
+// point every bone is back to weight 0 and the animator owns the pose again.
+```
+
+Per-bone weight is `0` (pure animation) to `1` (pure ragdoll); a partial
+ragdoll — legs only, say — is just a `boneWeights` map that omits the rest.
+`blendRagdollPose` is a pure function: it blends in world space (so a
+dynamic body's world transform and an animated bone's local pose combine
+correctly regardless of hierarchy) and converts back to the skeleton's local
+pose space, which is what `skinningMatrices` expects. A bone with weight `0`
+is left as an exact clone of the animated pose — no world round-trip, no
+floating-point drift — so weight `0` reproduces pure animation precisely.
+
+`ragdollActivationTargets` estimates each bone's world velocity from two
+consecutive animated poses (finite difference for linear, a small-angle
+quaternion delta for angular), which is what lets a character already
+running keep running momentum the instant it ragdolls, instead of popping to
+rest.
+
 ## Lifetime
 
 Removing a body **drops its joints**: a constraint referencing a removed body
@@ -390,3 +440,194 @@ Grabbing is a **server** decision. A client that decides what it is holding can
 hold anything, anywhere. Replicate the grab as ownership transfer — `setOwner`
 in `@vapour/net` — and let the server run the spring; the client predicts the
 held object like any other owned entity.
+
+---
+
+# Worker-side stepping and render interpolation
+
+Physics steps on a fixed schedule; render frames do not line up with it.
+Stepping physics off the main thread (`physics-worker-protocol.ts`) and
+interpolating what gets drawn between two published steps
+(`physics-interpolation.ts`) are what keep a low, fixed physics rate from
+looking like it is ticking — the two only make sense together.
+
+## The shared-memory handoff
+
+`PhysicsWorkerChannel` is one class shared by both sides: a worker (or the
+same-thread fallback below) calls `publish` once per physics step, and the
+main thread calls `consume` once per render frame.
+
+```ts
+import {
+  createPhysicsWorkerBuffer,
+  physicsWorkerBufferByteLength,
+  PhysicsWorkerChannel,
+  isSharedPhysicsBufferAvailable,
+} from "@vapour/engine";
+
+const maxBodies = 4096;
+const sab = createPhysicsWorkerBuffer(maxBodies); // SharedArrayBuffer, or ArrayBuffer as fallback
+worker.postMessage({ buffer: sab, maxBodies }); // structured-clone shares a SharedArrayBuffer
+
+// worker side, after each step:
+const channel = new PhysicsWorkerChannel(sab, maxBodies);
+channel.publish(tick, physics.step(dt).bodies);
+
+// main thread, once per render frame:
+const channel = new PhysicsWorkerChannel(sab, maxBodies);
+const snapshot = channel.consume(); // undefined only before the first publish
+```
+
+The layout is a small integer header (generation, active-buffer index, tick,
+body count) plus two double-buffered `Float32Array` body regions. The worker
+always writes into the region the reader is *not* currently using, then flips
+the header's active index — but that alone does not rule out a slow reader
+still copying region A when the worker races ahead, finishes B, and starts
+overwriting A again for the next step. The header's `generation` counter is
+what catches that: it increments before and after every publish, so `consume`
+rereads it after copying and retries if it moved — an ordinary seqlock. A
+torn read is a generation mismatch, not corrupted data; it is detected and
+retried, never returned.
+
+## The same-thread fallback
+
+`Atomics.store`/`Atomics.load` work identically on a `SharedArrayBuffer` and
+on a plain `ArrayBuffer` — only the blocking `Atomics.wait` needs sharing,
+which nothing here uses. `createPhysicsWorkerBuffer` checks
+`isSharedPhysicsBufferAvailable()` (`typeof SharedArrayBuffer !== "undefined"`
+and, where the flag exists, `crossOriginIsolated`) and allocates whichever
+buffer type the runtime supports; `PhysicsWorkerChannel` itself has no branch
+for either case. A page that is not cross-origin isolated, or a Node script
+with no worker at all, gets a plain `ArrayBuffer` and simply calls `publish`
+and `consume` synchronously on the same thread — same class, same layout,
+same public API, just no second thread underneath it.
+
+## Interpolating between two steps
+
+```ts
+import { interpolateBodies3d } from "@vapour/engine";
+
+let previous = channel.consume();
+function renderFrame(alpha: number) {
+  const latest = channel.consume() ?? previous;
+  const rendered = interpolateBodies3d(previous?.bodies ?? [], latest?.bodies ?? [], alpha);
+  // draw `rendered` transforms this frame
+  previous = latest;
+}
+```
+
+`alpha` is how far the render frame sits between the previous and latest
+published physics tick, in `[0, 1]` (clamped). Position lerps, rotation
+`nlerp`s. A body only in the later snapshot (just spawned) renders at its own
+transform unblended, since there is no earlier state; a body only in the
+earlier one (since removed) is dropped.
+
+## API reference
+
+| Export                            | Purpose                                              |
+| ---------------------------------- | ----------------------------------------------------- |
+| `PhysicsWorkerChannel`             | `publish` (producer), `consume` (reader), one class   |
+| `createPhysicsWorkerBuffer`        | Allocates a `SharedArrayBuffer` or `ArrayBuffer`      |
+| `isSharedPhysicsBufferAvailable`   | Whether the runtime can share memory across a worker  |
+| `physicsWorkerBufferByteLength`    | Buffer size for a given body capacity                 |
+| `interpolateBody3d`, `interpolateBodies3d` | Pure lerp/`nlerp` between two published steps |
+
+---
+
+# Physics debug rendering and statistics
+
+`physics-debug.ts` follows the engine's existing diagnostics modules exactly:
+shapes and joints queue into the shared `DebugDraw` buffer
+(`../diagnostics/debug-draw.ts`), and the solver's own numbers publish into
+the shared counter registry (`../diagnostics/counters.ts`). Neither module is
+physics-specific; this file only calls their existing public API.
+
+```ts
+import { drawPhysicsDebugScene3d, recordPhysicsStats3d } from "@vapour/engine";
+
+const step = physics.step(dt);
+drawPhysicsDebugScene3d(debugDraw, {
+  bodies: myDebugBodies, // { id, bodyType, shape, position, rotation, sleeping }
+  joints: myJointSpecs,
+  contacts: physics.contacts(),
+});
+if (step.stats) recordPhysicsStats3d(diagnostics, step.stats, stepTimeMs);
+```
+
+Every collider draws as a wireframe **oriented bounding box** — a box (or,
+for a compound, one box per child) transformed by the body's own position and
+rotation. That is a deliberate simplification ("a wireframe or bounds-based
+representation is fine, this is debug draw, not a full renderer"): every leaf
+shape costs exactly 12 `line()` calls regardless of its actual geometry
+(sphere, capsule, convex hull, mesh, heightfield all reduce to their local
+bounding box), which is also what makes the primitive count for a known scene
+exact and testable — `12 * leafShapes + joints + contacts`. Sleeping bodies
+tint differently from awake ones (cyan vs. green; static geometry stays
+white), a joint draws as one line between its two world-space anchors, and a
+contact draws as one short line along its normal.
+
+`recordPhysicsStats3d` publishes `PhysicsStats3d` — sourced straight from
+Rust (`vapour-core`'s `PhysicsStats3d`, crossing the WASM boundary already
+attached to every `step_json` result as `PhysicsStep3d.stats`) — as real
+counters: body counts split by type (`dynamic`/`kinematic`/`fixed`) and by
+sleep state (`awake`/`sleeping`), joint count, manifold and contact-pair and
+contact-point counts, and, when the caller measured it, the step's own
+wall-clock cost under the existing `physics.step` counter.
+
+## API reference
+
+| Export                        | Purpose                                                  |
+| ------------------------------ | --------------------------------------------------------- |
+| `drawColliderDebug3d`          | One body's collider as a wireframe OBB                    |
+| `drawJointDebug3d`              | One joint as a line between its anchors                   |
+| `drawContactDebug3d`            | One contact as a short marker along its normal            |
+| `drawPhysicsDebugScene3d`       | All of the above for a whole scene                        |
+| `recordPhysicsStats3d`         | Publishes a `PhysicsStats3d` into the counter registry     |
+| `PHYSICS_DEBUG_COUNTERS`       | The counter names it uses                                  |
+
+---
+
+# Stress test: thousands of dynamic bodies
+
+`physics-scale.perf.test.ts` spawns 2000 dynamic spheres over a static floor
+on the real Rapier-backed `PhysicsWorld3dBridge` (via `native-test-world.ts`,
+the same helper `vehicle-3d.test.ts` uses to run against the built WASM
+artifact rather than a fake), steps 120 times, and asserts:
+
+- no `NaN` or `Infinity` ever appears in any body's position, rotation, or
+  velocity, across every step;
+- the **average** per-step cost stays under a generous 40 ms budget;
+- the **worst single** step stays under a much more generous 400 ms budget,
+  separately from the average — following the pattern in
+  `render-scale.perf.test.ts` and `net-scale.perf.test.ts`: a single step can
+  spike from GC or OS scheduling noise with no regression behind it, so a
+  tight bound on one measurement flakes for reasons that have nothing to do
+  with physics.
+
+A real run on this machine:
+
+```
+[physics-scale] 2000 dynamic bodies, 120 steps: 2.47 ms/step avg, 21.33 ms worst
+```
+
+Both numbers sit well inside their budgets — the loose bounds exist to catch
+an order-of-magnitude regression on a loaded CI box, not to track day-to-day
+performance, which is what the printed line is for.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import createPhysicsWorld3d, rampWeight
+
+export async func spawn_ball(restitution):
+    var physics = await createPhysicsWorld3d()
+    physics.defineMaterial({ name: "rubber", friction: 0.8, restitution: restitution, frictionCombine: "average", restitutionCombine: "max" })
+    physics.insert({ id: 1, bodyType: "dynamic", position: [0, 5, 0], rotation: [0, 0, 0, 1], shape: { type: "sphere", radius: 0.3 }, material: "rubber" })
+    return physics
+
+export func ragdoll_weight(elapsed):
+    return rampWeight(elapsed, 0.5)
+```

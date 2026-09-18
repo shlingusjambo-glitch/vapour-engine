@@ -329,15 +329,22 @@ export class AudioEngine {
     this.#listenerMotion.velocity = [...velocity];
     const listener = this.#context.listener;
     const now = this.#context.currentTime;
-    listener.positionX.setValueAtTime(position[0], now);
-    listener.positionY.setValueAtTime(position[1], now);
-    listener.positionZ.setValueAtTime(position[2], now);
-    listener.forwardX.setValueAtTime(forward[0], now);
-    listener.forwardY.setValueAtTime(forward[1], now);
-    listener.forwardZ.setValueAtTime(forward[2], now);
-    listener.upX.setValueAtTime(up[0], now);
-    listener.upY.setValueAtTime(up[1], now);
-    listener.upZ.setValueAtTime(up[2], now);
+    if (listener.positionX !== undefined) {
+      listener.positionX.setValueAtTime(position[0], now);
+      listener.positionY.setValueAtTime(position[1], now);
+      listener.positionZ.setValueAtTime(position[2], now);
+      listener.forwardX.setValueAtTime(forward[0], now);
+      listener.forwardY.setValueAtTime(forward[1], now);
+      listener.forwardZ.setValueAtTime(forward[2], now);
+      listener.upX.setValueAtTime(up[0], now);
+      listener.upY.setValueAtTime(up[1], now);
+      listener.upZ.setValueAtTime(up[2], now);
+    } else {
+      // Firefox versions implementing the original Web Audio listener API
+      // expose methods rather than AudioParams.
+      listener.setPosition(position[0], position[1], position[2]);
+      listener.setOrientation(forward[0], forward[1], forward[2], up[0], up[1], up[2]);
+    }
     for (const voice of this.#voices.values()) voice.refreshDoppler();
   }
 

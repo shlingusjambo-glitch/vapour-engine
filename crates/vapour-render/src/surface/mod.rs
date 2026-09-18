@@ -6,31 +6,67 @@
 //! state, per-frame types, errors, and pipeline construction — so that adding a
 //! pass does not mean growing one file without bound.
 
+mod culling;
+mod decal;
+mod environment;
 mod error;
 mod frame;
 mod lighting;
 mod material;
 mod mesh;
+mod particles;
 mod pipeline;
 mod postprocess;
+mod render_target;
 mod shadow;
 mod texture_mips;
 mod view;
 
+pub(crate) use culling::*;
+pub use culling::{frustum_planes, sphere_inside, world_bounds};
+pub(crate) use decal::*;
+pub use decal::{DECAL_STRIDE, MAX_DECALS, decal_atlas_uv, decal_local_uv};
+pub(crate) use environment::*;
+pub use environment::{
+    BRDF_LUT_SIZE, IRRADIANCE_FACE_SIZE, MAX_ENVIRONMENT_FACE_SIZE, PREFILTER_MIN_FACE_SIZE,
+    SKY_CAPTURE_FACE_SIZE, cube_face_direction, cube_face_uv, mip_roughness, prefiltered_mip_count,
+};
 pub use error::*;
 pub use frame::*;
 pub use lighting::*;
 pub use material::*;
 pub(crate) use mesh::*;
+pub(crate) use particles::*;
+pub use particles::{
+    GpuParticle, MAX_PARTICLE_CAPACITY, PARTICLE_LUT_SAMPLES, PARTICLE_STRIDE, ParticleBlend,
+    ParticleCounters, ParticleError, ParticleParams, ParticleShapeKind, ParticleSystemDescriptor,
+    ParticleSystemStats, seed_state, spawn_particle, step_cpu,
+};
+pub use pipeline::MAX_BONE_MATRICES;
 pub(crate) use pipeline::*;
 pub use postprocess::{AntiAliasing, DebugView, PostProcessSettings, ToneMapping};
 pub(crate) use postprocess::{HDR_FORMAT, HdrTarget, PostProcessGpu};
+pub(crate) use render_target::*;
+pub use render_target::{RenderTargetSize, detect_render_target_cycle, target_extent};
 pub(crate) use shadow::*;
 pub(crate) use view::*;
 
 use std::collections::HashMap;
 
 use glam::{Mat4, Vec3};
+use wgpu::util::DeviceExt;
+
+use lighting::{LIGHT_KIND_POINT, LIGHT_KIND_SPOT};
+
+/// One layer's shadow data for the frame just being encoded: the directional
+/// cascades plus the point/spot atlas slots `update_uniforms` filled in.
+struct LayerShadowData {
+    /// The layer's camera view-projection, which frustum culling shares.
+    view_projection: Mat4,
+    cascades: [ShadowPassUniform; SHADOW_CASCADE_COUNT],
+    point_spot: [ShadowPassUniform; MAX_SHADOW_SLOTS],
+    point_spot_used: usize,
+}
 
 use crate::{
     CameraProjection, CompiledRenderGraph, GpuContext, MAX_RENDER_INSTANCES, PassKind, RenderWorld,
@@ -57,6 +93,16 @@ pub struct SurfaceRenderer<'surface> {
     layers: Vec<RenderLayerState>,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
+    culling: CullState,
+    particles: ParticlesGpu,
+    particle_systems: HashMap<String, ParticleSystemGpu>,
+    prefer_gpu_particles: bool,
+    /// Bone matrices for this frame's skinned instances; fixed capacity, see
+    /// [`MAX_BONE_MATRICES`].
+    bone_buffer: wgpu::Buffer,
+    environment: EnvironmentGpu,
+    decals: DecalGpu,
+    render_targets: HashMap<String, RenderTargetGpu>,
     instance_count: u32,
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
@@ -116,11 +162,25 @@ impl<'surface> SurfaceRenderer<'surface> {
         let shadow_pipeline =
             create_shadow_pipeline(&context.device, &shadows.layout, &material_layout);
         let sky_pipeline = create_sky_pipeline(&context.device, &frame_layout, &sky_shader);
+        let decal_shader = shader_library.create_module(&context.device, "vapour.decal")?;
+        let decals = DecalGpu::new(&context.device, &frame_layout, &decal_shader, HDR_FORMAT);
+        let cull_shader = shader_library.create_module(&context.device, "vapour.cull-instances")?;
+        let culling = CullState::new(&context.device, &cull_shader);
+        let particles = ParticlesGpu::new(
+            &context.device,
+            &frame_layout,
+            &shader_library.create_module(&context.device, "vapour.particles-sim")?,
+            &shader_library.create_module(&context.device, "vapour.particles")?,
+        );
 
+        let bone_buffer = create_bone_buffer(&context.device);
+        let environment = EnvironmentGpu::new(&context.device, &context.queue);
         let frame_uniforms = vec![create_frame_gpu(
             &context.device,
             &frame_layout,
             &shadows,
+            &bone_buffer,
+            &environment,
             0,
         )];
 
@@ -178,7 +238,15 @@ impl<'surface> SurfaceRenderer<'surface> {
             layers: Vec::new(),
             instance_buffer,
             instance_capacity,
+            culling,
+            particles,
+            particle_systems: HashMap::new(),
+            prefer_gpu_particles: true,
             instance_count: 0,
+            bone_buffer,
+            environment,
+            decals,
+            render_targets: HashMap::new(),
             depth_texture,
             depth_view,
             frame_graph,
@@ -186,6 +254,98 @@ impl<'surface> SurfaceRenderer<'surface> {
             post_process,
             post_process_settings: PostProcessSettings::default(),
         })
+    }
+
+    /// Prefers the compute culling path (the default) or forces the CPU
+    /// fallback. The GPU path also needs `RenderCapabilities::gpu_culling`;
+    /// `FrameStats::gpu_culling` reports which one actually ran.
+    pub fn set_gpu_culling(&mut self, enabled: bool) {
+        self.culling.prefer_gpu = enabled;
+    }
+
+    #[must_use]
+    pub fn gpu_culling_preferred(&self) -> bool {
+        self.culling.prefer_gpu
+    }
+
+    /// Whether systems created from now on simulate on the GPU (the default)
+    /// or on the CPU fallback. Existing systems keep the path they were
+    /// created with; `ParticleSystemStats::gpu` reports it.
+    pub fn set_gpu_particles(&mut self, enabled: bool) {
+        self.prefer_gpu_particles = enabled;
+    }
+
+    /// Creates a particle system, replacing any with the same identifier.
+    pub fn create_particle_system(
+        &mut self,
+        id: &str,
+        descriptor: ParticleSystemDescriptor,
+    ) -> Result<(), SurfaceRendererError> {
+        descriptor.validate()?;
+        let mut system = ParticleSystemGpu::new(
+            &self.context.device,
+            &self.particles,
+            descriptor,
+            self.prefer_gpu_particles,
+        );
+        system.reset(&self.context.queue);
+        self.particle_systems.insert(id.to_owned(), system);
+        Ok(())
+    }
+
+    /// Spawns `spawn` particles at `origin` and advances the system by
+    /// `dt` seconds. On the GPU path this submits the compute work now.
+    pub fn update_particle_system(
+        &mut self,
+        id: &str,
+        dt: f32,
+        spawn: u32,
+        origin: [f32; 3],
+    ) -> Result<(), SurfaceRendererError> {
+        if !dt.is_finite() || dt < 0.0 || !origin.iter().all(|v| v.is_finite()) {
+            return Err(ParticleError::Invalid(
+                "update needs a finite, non-negative delta and a finite origin",
+            )
+            .into());
+        }
+        let system = self
+            .particle_systems
+            .get_mut(id)
+            .ok_or_else(|| ParticleError::Missing(id.to_owned()))?;
+        system.step(
+            &self.context.device,
+            &self.context.queue,
+            &self.particles,
+            dt,
+            spawn,
+            origin,
+        );
+        Ok(())
+    }
+
+    /// Removes every particle and restarts the system's generator.
+    pub fn clear_particle_system(&mut self, id: &str) -> Result<(), SurfaceRendererError> {
+        let system = self
+            .particle_systems
+            .get_mut(id)
+            .ok_or_else(|| ParticleError::Missing(id.to_owned()))?;
+        system.reset(&self.context.queue);
+        Ok(())
+    }
+
+    pub fn release_particle_system(&mut self, id: &str) -> bool {
+        self.particle_systems.remove(id).is_some()
+    }
+
+    pub fn particle_system_stats(
+        &self,
+        id: &str,
+    ) -> Result<ParticleSystemStats, SurfaceRendererError> {
+        Ok(self
+            .particle_systems
+            .get(id)
+            .ok_or_else(|| ParticleError::Missing(id.to_owned()))?
+            .stats())
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -199,6 +359,63 @@ impl<'surface> SurfaceRenderer<'surface> {
         self.surface.configure(&self.context.device, &self.config);
         (self.depth_texture, self.depth_view) = create_depth(&self.context.device, width, height);
         self.hdr_target = HdrTarget::new(&self.context.device, width, height);
+        let ids: Vec<String> = self.render_targets.keys().cloned().collect();
+        for id in ids {
+            let target = self.render_targets.get_mut(&id).expect("listed key");
+            if target.resize(&self.context.device, &id, width, height) {
+                let texture = target.as_texture();
+                // Cannot fail: the materials already bound this identifier.
+                let _ = self.replace_texture(&id, texture);
+            }
+        }
+    }
+
+    /// Creates or resizes a render target that layers can render into and
+    /// materials can sample under `id`. Surface-scaled targets reallocate on
+    /// resize and rebuild every material bound to them.
+    pub fn create_render_target(
+        &mut self,
+        id: &str,
+        size: RenderTargetSize,
+    ) -> Result<(), SurfaceRendererError> {
+        validate_asset_id("texture", id)?;
+        if self.textures.contains_key(id) && !self.render_targets.contains_key(id) {
+            return Err(SurfaceRendererError::InvalidRenderTarget {
+                id: id.to_owned(),
+                reason: "an uploaded texture already uses this identifier",
+            });
+        }
+        validate_target_size(
+            id,
+            size,
+            self.context.device.limits().max_texture_dimension_2d,
+        )?;
+        let target = RenderTargetGpu::new(
+            &self.context.device,
+            id,
+            size,
+            self.config.width,
+            self.config.height,
+        );
+        let texture = target.as_texture();
+        self.render_targets.insert(id.to_owned(), target);
+        self.replace_texture(id, texture)
+    }
+
+    /// Releases a render target. Fails while a material still samples it.
+    pub fn release_render_target(&mut self, id: &str) -> Result<bool, SurfaceRendererError> {
+        if !self.render_targets.contains_key(id) {
+            return Ok(false);
+        }
+        self.release_texture(id)?;
+        Ok(self.render_targets.remove(id).is_some())
+    }
+
+    #[must_use]
+    pub fn render_target_extent(&self, id: &str) -> Option<(u32, u32)> {
+        self.render_targets
+            .get(id)
+            .map(|target| (target.width, target.height))
     }
 
     pub fn set_post_process(
@@ -316,7 +533,23 @@ impl<'surface> SurfaceRenderer<'surface> {
                 actual: pixels.len(),
             });
         }
+        if self.render_targets.contains_key(id) {
+            return Err(SurfaceRendererError::InvalidTextureId {
+                id: id.to_owned(),
+                reason: "a render target already uses this identifier",
+            });
+        }
         let texture = texture_rgba8(&self.context, id, width, height, pixels, srgb, mipmaps);
+        self.replace_texture(id, texture)
+    }
+
+    /// Installs `texture` under `id` and rebuilds every material bound to
+    /// that identifier, so a replacement is atomic from the next frame.
+    fn replace_texture(
+        &mut self,
+        id: &str,
+        texture: TextureGpu,
+    ) -> Result<(), SurfaceRendererError> {
         self.textures.insert(id.to_owned(), texture);
 
         let definitions: Vec<(usize, String, MaterialDefinition)> = self
@@ -402,6 +635,212 @@ impl<'surface> SurfaceRenderer<'surface> {
         Ok(self.materials.remove(id))
     }
 
+    /// Replaces the environment map with six RGBA8 faces (+X, -X, +Y, -Y,
+    /// +Z, -Z, each `face_size²` texels) and convolves it for image-based
+    /// lighting. `intensity` scales the map's radiance. The map lights every
+    /// layer until it is replaced or cleared.
+    pub fn upload_environment_cubemap(
+        &mut self,
+        face_size: u32,
+        faces: &[u8],
+        srgb: bool,
+        intensity: f32,
+    ) -> Result<(), SurfaceRendererError> {
+        if face_size == 0 || face_size > MAX_ENVIRONMENT_FACE_SIZE {
+            return Err(SurfaceRendererError::InvalidEnvironmentMap {
+                reason: format!(
+                    "face size must be in 1..={MAX_ENVIRONMENT_FACE_SIZE}, received {face_size}"
+                ),
+            });
+        }
+        let expected = (face_size as usize) * (face_size as usize) * 4 * 6;
+        if faces.len() != expected {
+            return Err(SurfaceRendererError::InvalidEnvironmentMap {
+                reason: format!(
+                    "six {face_size}x{face_size} RGBA8 faces need {expected} bytes, received {}",
+                    faces.len()
+                ),
+            });
+        }
+        validate_environment_intensity(intensity)?;
+        let source = EnvironmentGpu::source_from_rgba8(
+            &self.context.device,
+            &self.context.queue,
+            face_size,
+            faces,
+            srgb,
+        );
+        self.environment.convolve(
+            &self.context.device,
+            &self.context.queue,
+            &source,
+            intensity,
+        );
+        self.rebuild_frame_bind_groups();
+        Ok(())
+    }
+
+    /// Captures the first layer's procedural sky and light rig into an
+    /// environment map and convolves it, so scene lighting matches the sky
+    /// the camera sees. Requires a submitted frame whose first layer has a
+    /// procedural sky. This is a deliberate, explicit call, not automatic:
+    /// convolution costs several dozen small render passes, so a day/night
+    /// cycle should recapture at a rate it chooses (every few seconds is
+    /// plenty) rather than every frame.
+    pub fn set_environment_from_sky(&mut self, intensity: f32) -> Result<(), SurfaceRendererError> {
+        validate_environment_intensity(intensity)?;
+        let Some(layer) = self.layers.first() else {
+            return Err(SurfaceRendererError::InvalidEnvironmentMap {
+                reason: "no frame has been submitted to capture a sky from".into(),
+            });
+        };
+        if layer.view.sky_zenith_mode[3] != 1.0 {
+            return Err(SurfaceRendererError::InvalidEnvironmentMap {
+                reason: "the first layer has no procedural sky to capture".into(),
+            });
+        }
+        let aspect = self.layer_aspect(layer);
+        let (mut frame, _) = self.layer_uniforms(0, layer, 0.0, aspect);
+        let mip_count = full_mip_count(SKY_CAPTURE_FACE_SIZE);
+        let source = CubemapGpu::new(
+            &self.context.device,
+            "Vapour sky capture",
+            SKY_CAPTURE_FACE_SIZE,
+            mip_count,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        // The sky shader reconstructs a ray as `inverse_view_projection *
+        // (clip_xy, 1, 1)` minus the camera position, so a matrix whose
+        // rotation is the face basis and whose translation is the camera
+        // writes each face in sampling orientation.
+        let camera = Vec3::from_slice(&frame.camera_position_exposure[..3]);
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Vapour sky capture"),
+                });
+        // One uniform buffer and bind group per face keeps every face in one
+        // submission; they are dropped once the queue owns the commands.
+        let mut face_bind_groups = Vec::with_capacity(6);
+        for face in 0..6 {
+            let basis = cube_face_ray_basis(face);
+            let inverse = Mat4::from_cols(
+                basis.x_axis.extend(0.0),
+                basis.y_axis.extend(0.0),
+                basis.z_axis.extend(0.0),
+                camera.extend(1.0),
+            );
+            frame.inverse_view_projection = inverse.to_cols_array_2d();
+            let buffer =
+                self.context
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Vapour sky capture uniforms"),
+                        contents: bytemuck::bytes_of(&frame),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+            face_bind_groups.push(frame_bind_group_with_buffer(
+                &self.context.device,
+                &self.frame_layout,
+                &buffer,
+                &self.shadows,
+                &self.bone_buffer,
+                &self.environment,
+            ));
+        }
+        for (face, bind_group) in face_bind_groups.iter().enumerate() {
+            for mip in 0..mip_count {
+                let view = source.face_view(face as u32, mip);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Vapour sky capture face"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+        self.context.queue.submit([encoder.finish()]);
+        self.environment.convolve(
+            &self.context.device,
+            &self.context.queue,
+            &source,
+            intensity,
+        );
+        self.rebuild_frame_bind_groups();
+        Ok(())
+    }
+
+    /// Replaces this frame's decals. `packed` holds [`DECAL_STRIDE`] floats
+    /// per decal (see `decal.rs`); `atlas` names an uploaded texture every
+    /// decal samples through its region, or `None` for tint-only decals.
+    /// Decals project onto the first layer's opaque depth only; overlay
+    /// layers are never decaled. The set persists until replaced, so a
+    /// static scene submits once.
+    pub fn set_decals(
+        &mut self,
+        atlas: Option<&str>,
+        packed: &[f32],
+    ) -> Result<(), SurfaceRendererError> {
+        if let Some(atlas) = atlas
+            && !self.textures.contains_key(atlas)
+        {
+            return Err(SurfaceRendererError::UnknownTexture {
+                material: "decals".into(),
+                texture: atlas.to_owned(),
+            });
+        }
+        let decals = decode_decals(packed)?;
+        self.decals
+            .upload(&self.context.device, &self.context.queue, &decals);
+        self.decals.atlas = atlas.map(str::to_owned);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn decal_count(&self) -> u32 {
+        self.decals.count
+    }
+
+    /// Drops the environment map; ambient lighting returns to the analytic
+    /// sky gradient.
+    pub fn clear_environment(&mut self) {
+        self.environment.clear();
+    }
+
+    #[must_use]
+    pub fn environment_live(&self) -> bool {
+        self.environment.live
+    }
+
+    /// The frame bind groups reference the environment textures, so a new
+    /// environment means new bind groups. Buffers are rewritten every frame.
+    fn rebuild_frame_bind_groups(&mut self) {
+        for index in 0..self.frame_uniforms.len() {
+            self.frame_uniforms[index] = create_frame_gpu(
+                &self.context.device,
+                &self.frame_layout,
+                &self.shadows,
+                &self.bone_buffer,
+                &self.environment,
+                index,
+            );
+        }
+    }
+
     /// Submits an authored scene. This is the editor's path: readable JSON,
     /// convenient, and fine at document-editing rates.
     ///
@@ -457,6 +896,9 @@ impl<'surface> SurfaceRenderer<'surface> {
                 model: Mat4::from_cols_array(&instance.model_matrix),
                 base_color: instance.base_color,
                 material_params: instance.material_params,
+                // The editor's JSON scene submission predates skinning; a
+                // skinned character authored there renders in its rest pose.
+                bone_offset: -1.0,
             });
         }
         self.commit(view, default_view, submission);
@@ -589,6 +1031,7 @@ impl<'surface> SurfaceRenderer<'surface> {
                 model: Mat4::from_cols_array(&model),
                 base_color: read4(base_colors, index, [1.0, 1.0, 1.0, 1.0]),
                 material_params: read4(material_params, index, [0.0, 0.6, 0.0, 0.01]),
+                bone_offset: -1.0,
             });
         }
         self.commit(view, default_view, submission);
@@ -616,6 +1059,11 @@ impl<'surface> SurfaceRenderer<'surface> {
             lights,
             layer_light_counts,
             environments,
+            bone_offsets,
+            bone_matrices,
+            layer_targets,
+            viewports,
+            projections,
         } = frame;
         let layer_count = layer_instance_counts.len();
         if layer_count == 0 {
@@ -633,6 +1081,17 @@ impl<'surface> SurfaceRenderer<'surface> {
         )?;
         if !layer_light_counts.is_empty() {
             expect_len("layerLightCounts", layer_light_counts.len(), layer_count)?;
+        }
+        if !layer_targets.is_empty() {
+            expect_len("layerTargets", layer_targets.len(), layer_count)?;
+        }
+        if !viewports.is_empty() {
+            expect_len("viewports", viewports.len(), layer_count * 4)?;
+            finite("viewports", viewports)?;
+        }
+        if !projections.is_empty() {
+            expect_len("projections", projections.len(), layer_count * 16)?;
+            finite("projections", projections)?;
         }
         let total_lights: usize = layer_light_counts.iter().map(|value| *value as usize).sum();
         expect_len("lights", lights.len(), total_lights * LIGHT_STRIDE)?;
@@ -660,6 +1119,31 @@ impl<'surface> SurfaceRenderer<'surface> {
             }
             .into());
         }
+        if !bone_offsets.is_empty() {
+            expect_len("boneOffsets", bone_offsets.len(), count)?;
+        }
+        if !bone_matrices.len().is_multiple_of(16) {
+            return Err(SurfaceRendererError::FrameArrayLength {
+                field: "boneMatrices",
+                actual: bone_matrices.len(),
+                expected: bone_matrices.len().next_multiple_of(16),
+            });
+        }
+        let bone_count = bone_matrices.len() / 16;
+        if bone_count > MAX_BONE_MATRICES {
+            return Err(SurfaceRendererError::TooManyBones {
+                field: "boneMatrices",
+                actual: bone_count,
+                limit: MAX_BONE_MATRICES,
+            });
+        }
+        if !bone_matrices.is_empty() {
+            self.context.queue.write_buffer(
+                &self.bone_buffer,
+                0,
+                bytemuck::cast_slice(bone_matrices),
+            );
+        }
 
         let mut slots = Vec::with_capacity(mesh_table.len());
         for id in mesh_table {
@@ -677,19 +1161,59 @@ impl<'surface> SurfaceRenderer<'surface> {
         let mut layers = Vec::with_capacity(layer_count);
         let mut instance_start = 0;
         let mut light_offset = 0;
+        // Every layer's destination and the targets its materials sample, for
+        // the cycle check once all layers are decoded.
+        let mut target_graph: Vec<(Option<String>, Vec<String>)> = Vec::with_capacity(layer_count);
         for layer_index in 0..layer_count {
             let flags = layer_flags[layer_index];
+            let target = match layer_targets.get(layer_index).map(String::as_str) {
+                None | Some("") => None,
+                Some(id) => {
+                    if !self.render_targets.contains_key(id) {
+                        return Err(SurfaceRendererError::UnknownRenderTarget {
+                            layer: layer_index,
+                            id: id.to_owned(),
+                        });
+                    }
+                    Some(id.to_owned())
+                }
+            };
+            let viewport = match viewports.get(layer_index * 4..layer_index * 4 + 4) {
+                Some(rect) => {
+                    let rect = [rect[0], rect[1], rect[2], rect[3]];
+                    if rect.iter().any(|value| !(0.0..=1.0).contains(value))
+                        || rect[2] <= 0.0
+                        || rect[3] <= 0.0
+                        || rect[0] + rect[2] > 1.0001
+                        || rect[1] + rect[3] > 1.0001
+                    {
+                        return Err(SurfaceRendererError::InvalidRenderLayer {
+                            layer: layer_index,
+                            reason: "viewport must be a non-empty x, y, width, height rectangle inside [0, 1]",
+                        });
+                    }
+                    rect
+                }
+                None => FULL_VIEWPORT,
+            };
             if flags
                 & !(RENDER_LAYER_CLEAR_COLOR
                     | RENDER_LAYER_CLEAR_DEPTH
                     | RENDER_LAYER_HAS_CAMERA
                     | RENDER_LAYER_HAS_LIGHT
-                    | RENDER_LAYER_HAS_ENVIRONMENT)
+                    | RENDER_LAYER_HAS_ENVIRONMENT
+                    | RENDER_LAYER_HAS_PROJECTION)
                 != 0
             {
                 return Err(SurfaceRendererError::InvalidRenderLayer {
                     layer: layer_index,
                     reason: "flags contain unknown bits",
+                });
+            }
+            if flags & RENDER_LAYER_HAS_PROJECTION != 0 && projections.is_empty() {
+                return Err(SurfaceRendererError::InvalidRenderLayer {
+                    layer: layer_index,
+                    reason: "flags claim a projection matrix but none was supplied",
                 });
             }
             let mut view = ViewState::default();
@@ -708,6 +1232,18 @@ impl<'surface> SurfaceRenderer<'surface> {
                 }
                 view.near = camera[18].max(1e-4);
                 view.far = camera[19].max(view.near * 1.001);
+            }
+            if flags & RENDER_LAYER_HAS_PROJECTION != 0 {
+                let mut matrix = [0.0_f32; 16];
+                matrix.copy_from_slice(&projections[layer_index * 16..layer_index * 16 + 16]);
+                let projection = Mat4::from_cols_array(&matrix);
+                if projection.determinant() == 0.0 {
+                    return Err(SurfaceRendererError::InvalidRenderLayer {
+                        layer: layer_index,
+                        reason: "projection matrix is singular",
+                    });
+                }
+                view.projection_override = Some(projection);
             }
             if flags & RENDER_LAYER_HAS_LIGHT != 0 {
                 let count = layer_light_counts
@@ -741,6 +1277,7 @@ impl<'surface> SurfaceRenderer<'surface> {
 
             let instance_end = instance_start + layer_instance_counts[layer_index] as usize;
             let mut instances = Vec::with_capacity(instance_end - instance_start);
+            let mut sampled_targets: Vec<String> = Vec::new();
             for index in instance_start..instance_end {
                 let mesh_index = mesh_indices[index] as usize;
                 let slot =
@@ -767,29 +1304,52 @@ impl<'surface> SurfaceRenderer<'surface> {
                     }
                     .into());
                 }
+                let definition = &self
+                    .materials
+                    .get(material)
+                    .expect("resolved material slots stay occupied during submission")
+                    .definition;
+                if !self.render_targets.is_empty() {
+                    for texture in definition.textures.iter().flatten() {
+                        if self.render_targets.contains_key(texture)
+                            && !sampled_targets.contains(texture)
+                        {
+                            sampled_targets.push(texture.clone());
+                        }
+                    }
+                }
                 instances.push(InstanceSubmission {
                     slot,
                     material,
-                    pipeline: self
-                        .materials
-                        .get(material)
-                        .expect("resolved material slots stay occupied during submission")
-                        .definition
-                        .pipeline,
+                    pipeline: definition.pipeline,
                     model: Mat4::from_cols_array(&model),
                     base_color: read4(base_colors, index, [1.0; 4]),
                     material_params: read4(material_params, index, [0.0, 0.6, 0.0, 0.01]),
+                    bone_offset: bone_offsets.get(index).copied().unwrap_or(-1.0),
                 });
             }
+            target_graph.push((target.clone(), sampled_targets));
             layers.push(LayerSubmission {
                 view,
                 default_view,
                 clear_color: flags & RENDER_LAYER_CLEAR_COLOR != 0,
                 clear_depth: flags & RENDER_LAYER_CLEAR_DEPTH != 0,
                 instances,
+                target,
+                viewport,
             });
             instance_start = instance_end;
         }
+        let sampled_refs: Vec<Vec<&str>> = target_graph
+            .iter()
+            .map(|(_, sampled)| sampled.iter().map(String::as_str).collect())
+            .collect();
+        let graph: Vec<(Option<&str>, &[&str])> = target_graph
+            .iter()
+            .zip(&sampled_refs)
+            .map(|((target, _), sampled)| (target.as_deref(), sampled.as_slice()))
+            .collect();
+        detect_render_target_cycle(&graph)?;
         self.commit_layers(layers);
         Ok(())
     }
@@ -814,25 +1374,26 @@ impl<'surface> SurfaceRenderer<'surface> {
             clear_color: true,
             clear_depth: true,
             instances: submission,
+            target: None,
+            viewport: FULL_VIEWPORT,
         }]);
     }
 
     fn commit_layers(&mut self, mut submissions: Vec<LayerSubmission>) {
         let total_instances: usize = submissions.iter().map(|layer| layer.instances.len()).sum();
         let mut instances = Vec::with_capacity(total_instances);
+        let mut cull_inputs = Vec::with_capacity(total_instances);
+        let mut args: Vec<DrawArgs> = Vec::new();
         let mut layers = Vec::with_capacity(submissions.len());
         for layer in &mut submissions {
             sort_submissions(
                 &mut layer.instances,
                 layer.view.camera_world.transform_point3(Vec3::ZERO),
             );
+            let first_instance = instances.len() as u32;
+            let first_batch = args.len() as u32;
             let mut batches: Vec<DrawBatch> = Vec::new();
             for entry in layer.instances.drain(..) {
-                let normal_matrix = if entry.model.determinant().abs() > f32::EPSILON {
-                    entry.model.inverse().transpose()
-                } else {
-                    Mat4::IDENTITY
-                };
                 match batches.last_mut() {
                     Some(batch)
                         if batch.mesh == entry.slot
@@ -849,19 +1410,58 @@ impl<'surface> SurfaceRenderer<'surface> {
                         instance_count: 1,
                     }),
                 }
+                // Blended batches draw back-to-front, so they pass through
+                // culling uncompacted; opaque batches are compacted.
+                let pass_through = entry.pipeline.blended();
+                let (center, radius) = world_bounds(
+                    entry.model,
+                    self.meshes
+                        .get(entry.slot)
+                        .map_or(0.0, |mesh| mesh.bounding_radius),
+                );
+                cull_inputs.push(CullInput {
+                    center_radius: [center.x, center.y, center.z, radius],
+                    batch_flags: [
+                        first_batch + batches.len() as u32 - 1,
+                        if pass_through { CULL_PASS_THROUGH } else { 0 },
+                        0,
+                        0,
+                    ],
+                });
                 instances.push(InstanceData {
                     model: entry.model.to_cols_array_2d(),
-                    normal_matrix: normal_matrix.to_cols_array_2d(),
                     base_color: entry.base_color,
                     material_params: entry.material_params,
+                    skin: [entry.bone_offset, 0.0, 0.0, 0.0],
                 });
             }
+            args.extend(batches.iter().map(|batch| {
+                DrawArgs {
+                    index_count: self
+                        .meshes
+                        .get(batch.mesh)
+                        .map_or(0, |mesh| mesh.index_count),
+                    instance_count: if batch.pipeline.blended() {
+                        batch.instance_count
+                    } else {
+                        0
+                    },
+                    first_index: 0,
+                    base_vertex: 0,
+                    first_instance: batch.first_instance,
+                }
+            }));
             layers.push(RenderLayerState {
+                first_instance,
+                instance_count: instances.len() as u32 - first_instance,
+                first_batch,
                 view: layer.view.clone(),
                 default_view: layer.default_view,
                 clear_color: layer.clear_color,
                 clear_depth: layer.clear_depth,
                 batches,
+                target: layer.target.take(),
+                viewport: layer.viewport,
             });
         }
 
@@ -878,12 +1478,21 @@ impl<'surface> SurfaceRenderer<'surface> {
             );
         }
         self.instance_count = instances.len() as u32;
+        self.culling.upload(
+            &self.context.device,
+            &self.context.queue,
+            cull_inputs,
+            instances,
+            args,
+        );
         while self.frame_uniforms.len() < layers.len() {
             let index = self.frame_uniforms.len();
             self.frame_uniforms.push(create_frame_gpu(
                 &self.context.device,
                 &self.frame_layout,
                 &self.shadows,
+                &self.bone_buffer,
+                &self.environment,
                 index,
             ));
         }
@@ -897,9 +1506,11 @@ impl<'surface> SurfaceRenderer<'surface> {
                 draw_calls: 0,
                 triangles: 0,
                 cpu_encode_ms: started.elapsed_ms(),
+                gpu_culling: false,
+                culled_instances: Some(0),
             });
         };
-        let shadow_cascades = self.update_uniforms(time_seconds);
+        let shadow_data = self.update_uniforms(time_seconds);
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -914,14 +1525,35 @@ impl<'surface> SurfaceRenderer<'surface> {
         let post_bind_group = self
             .post_process
             .bind_group(&self.context.device, &self.hdr_target.view);
+        // Frustum-cull every layer up front: the material pass below reads
+        // the compacted buffer, the shadow passes keep the full set since
+        // they see the scene from the light.
+        let jobs: Vec<CullJob> = self
+            .layers
+            .iter()
+            .zip(&shadow_data)
+            .map(|(layer, data)| CullJob {
+                planes: frustum_planes(data.view_projection),
+                first: layer.first_instance,
+                count: layer.instance_count,
+            })
+            .collect();
+        let cull = self.culling.cull(
+            &self.context.device,
+            &self.context.queue,
+            &mut encoder,
+            &self.instance_buffer,
+            &jobs,
+            self.context.capabilities.gpu_culling,
+        );
         let mut draw_calls = 0;
         for pass in self.frame_graph.passes() {
             match (pass.name.as_str(), pass.kind) {
                 ("directional-shadow", PassKind::Render) => {
-                    if let (Some(cascades), Some(layer)) =
-                        (shadow_cascades.first(), self.layers.first())
+                    if let (Some(shadow_layer), Some(layer)) =
+                        (shadow_data.first(), self.layers.first())
                     {
-                        for (cascade_index, cascade) in cascades.iter().enumerate() {
+                        for (cascade_index, cascade) in shadow_layer.cascades.iter().enumerate() {
                             self.context.queue.write_buffer(
                                 &self.shadows.cascade_buffers[cascade_index],
                                 0,
@@ -960,6 +1592,70 @@ impl<'surface> SurfaceRenderer<'surface> {
                                     continue;
                                 };
                                 shadow_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                                shadow_pass.set_vertex_buffer(2, mesh.skin_buffer.slice(..));
+                                let Some(material) = self.materials.get(batch.material) else {
+                                    continue;
+                                };
+                                shadow_pass.set_bind_group(1, &material.bind_group, &[]);
+                                shadow_pass.set_index_buffer(
+                                    mesh.index_buffer.slice(..),
+                                    wgpu::IndexFormat::Uint32,
+                                );
+                                let first = batch.first_instance;
+                                shadow_pass.draw_indexed(
+                                    0..mesh.index_count,
+                                    0,
+                                    first..first + batch.instance_count,
+                                );
+                                draw_calls += 1;
+                            }
+                        }
+                    }
+                }
+                ("point-spot-shadow", PassKind::Render) => {
+                    if let (Some(shadow_layer), Some(layer)) =
+                        (shadow_data.first(), self.layers.first())
+                    {
+                        for slot in 0..shadow_layer.point_spot_used {
+                            self.context.queue.write_buffer(
+                                &self.shadows.point_spot_buffers[slot],
+                                0,
+                                bytemuck::bytes_of(&shadow_layer.point_spot[slot]),
+                            );
+                            let mut shadow_pass =
+                                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                    label: Some("Vapour point/spot shadow slot pass"),
+                                    color_attachments: &[],
+                                    depth_stencil_attachment: Some(
+                                        wgpu::RenderPassDepthStencilAttachment {
+                                            view: &self.shadows.point_spot_layer_views[slot],
+                                            depth_ops: Some(wgpu::Operations {
+                                                load: wgpu::LoadOp::Clear(1.0),
+                                                store: wgpu::StoreOp::Store,
+                                            }),
+                                            stencil_ops: None,
+                                        },
+                                    ),
+                                    timestamp_writes: None,
+                                    occlusion_query_set: None,
+                                    multiview_mask: None,
+                                });
+                            shadow_pass.set_pipeline(&self.shadow_pipeline);
+                            shadow_pass.set_bind_group(
+                                0,
+                                &self.shadows.point_spot_bind_groups[slot],
+                                &[],
+                            );
+                            shadow_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                            for batch in &layer.batches {
+                                if batch.pipeline.blended() {
+                                    continue;
+                                }
+                                let Some(mesh) = self.meshes.get(batch.mesh) else {
+                                    continue;
+                                };
+                                shadow_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                                shadow_pass.set_vertex_buffer(2, mesh.skin_buffer.slice(..));
                                 let Some(material) = self.materials.get(batch.material) else {
                                     continue;
                                 };
@@ -996,11 +1692,12 @@ impl<'surface> SurfaceRenderer<'surface> {
                         } else {
                             wgpu::LoadOp::Load
                         };
+                        let (color_view, depth_view, extent) = self.layer_destination(layer);
                         let mut render_pass =
                             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("Vapour layered standard PBR pass"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &self.hdr_target.view,
+                                    view: color_view,
                                     depth_slice: None,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
@@ -1010,7 +1707,7 @@ impl<'surface> SurfaceRenderer<'surface> {
                                 })],
                                 depth_stencil_attachment: Some(
                                     wgpu::RenderPassDepthStencilAttachment {
-                                        view: &self.depth_view,
+                                        view: depth_view,
                                         depth_ops: Some(wgpu::Operations {
                                             load: depth_load,
                                             store: wgpu::StoreOp::Store,
@@ -1022,6 +1719,12 @@ impl<'surface> SurfaceRenderer<'surface> {
                                 occlusion_query_set: None,
                                 multiview_mask: None,
                             });
+                        if layer.viewport != FULL_VIEWPORT {
+                            let (x, y, w, h) = viewport_pixels(layer.viewport, extent);
+                            render_pass
+                                .set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+                            render_pass.set_scissor_rect(x, y, w, h);
+                        }
                         render_pass.set_bind_group(
                             0,
                             &self.frame_uniforms[layer_index].bind_group,
@@ -1032,14 +1735,19 @@ impl<'surface> SurfaceRenderer<'surface> {
                             render_pass.draw(0..3, 0..1);
                             draw_calls += 1;
                         }
-                        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-                        for batch in &layer.batches {
+                        render_pass.set_vertex_buffer(1, self.culling.compacted.slice(..));
+                        for (batch_offset, batch) in layer.batches.iter().enumerate() {
+                            let batch_index = layer.first_batch as usize + batch_offset;
                             let Some(mesh) = self.meshes.get(batch.mesh) else {
                                 continue;
                             };
                             let Some(material) = self.materials.get(batch.material) else {
                                 continue;
                             };
+                            let args = self.culling.args[batch_index];
+                            if !cull.gpu && args.instance_count == 0 {
+                                continue;
+                            }
                             let pipeline = self
                                 .pipelines
                                 .get(&batch.pipeline)
@@ -1047,17 +1755,122 @@ impl<'surface> SurfaceRenderer<'surface> {
                             render_pass.set_pipeline(pipeline);
                             render_pass.set_bind_group(1, &material.bind_group, &[]);
                             render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                            render_pass.set_vertex_buffer(2, mesh.skin_buffer.slice(..));
                             render_pass.set_index_buffer(
                                 mesh.index_buffer.slice(..),
                                 wgpu::IndexFormat::Uint32,
                             );
-                            let first = batch.first_instance;
-                            render_pass.draw_indexed(
-                                0..mesh.index_count,
-                                0,
-                                first..first + batch.instance_count,
-                            );
+                            if cull.gpu {
+                                render_pass.draw_indexed_indirect(
+                                    &self.culling.args_buffer,
+                                    args_offset(batch_index),
+                                );
+                            } else {
+                                let first = args.first_instance;
+                                render_pass.draw_indexed(
+                                    0..mesh.index_count,
+                                    0,
+                                    first..first + args.instance_count,
+                                );
+                            }
                             draw_calls += 1;
+                        }
+                    }
+                }
+                ("decals", PassKind::Render) => {
+                    let atlas_view = match &self.decals.atlas {
+                        Some(id) => self.textures.get(id).map(|texture| &texture.view),
+                        None => Some(&self.default_textures[0].view),
+                    };
+                    let cube = self
+                        .meshes
+                        .slot(BuiltinMesh::Cube.id())
+                        .and_then(|slot| self.meshes.get(slot));
+                    // Decals read the surface depth, so they apply only when
+                    // the world layer presents to the surface.
+                    let world_on_surface = self
+                        .layers
+                        .first()
+                        .is_some_and(|layer| layer.target.is_none());
+                    if let (Some(atlas_view), Some(cube), true) =
+                        (atlas_view, cube, self.decals.count > 0 && world_on_surface)
+                    {
+                        let bind_group = self.decals.bind_group(
+                            &self.context.device,
+                            &self.depth_view,
+                            atlas_view,
+                        );
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Vapour decal pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &self.hdr_target.view,
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                                multiview_mask: None,
+                            });
+                        render_pass.set_pipeline(&self.decals.pipeline);
+                        render_pass.set_bind_group(0, &self.frame_uniforms[0].bind_group, &[]);
+                        render_pass.set_bind_group(1, &bind_group, &[]);
+                        render_pass.set_vertex_buffer(0, cube.vertex_buffer.slice(..));
+                        render_pass.set_vertex_buffer(1, self.decals.instance_buffer.slice(..));
+                        render_pass.set_index_buffer(
+                            cube.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        render_pass.draw_indexed(0..cube.index_count, 0, 0..self.decals.count);
+                        draw_calls += 1;
+                    }
+                }
+                ("particles", PassKind::Render) => {
+                    // Particles depth-test against the surface depth, so
+                    // like decals they draw only when the world layer
+                    // presents to the surface.
+                    let world_on_surface = self
+                        .layers
+                        .first()
+                        .is_some_and(|layer| layer.target.is_none());
+                    if !self.particle_systems.is_empty() && world_on_surface {
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Vapour particle pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &self.hdr_target.view,
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: &self.depth_view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                                multiview_mask: None,
+                            });
+                        render_pass.set_pipeline(&self.particles.draw_pipeline);
+                        render_pass.set_bind_group(0, &self.frame_uniforms[0].bind_group, &[]);
+                        for system in self.particle_systems.values() {
+                            if system.draw(&mut render_pass) {
+                                draw_calls += 1;
+                            }
                         }
                     }
                 }
@@ -1092,6 +1905,8 @@ impl<'surface> SurfaceRenderer<'surface> {
             draw_calls,
             triangles: self.triangle_count(),
             cpu_encode_ms: started.elapsed_ms(),
+            gpu_culling: cull.gpu,
+            culled_instances: cull.culled,
         })
     }
 
@@ -1116,10 +1931,62 @@ impl<'surface> SurfaceRenderer<'surface> {
         self.config.height
     }
 
-    fn update_uniforms(&self, time_seconds: f32) -> Vec<[ShadowPassUniform; SHADOW_CASCADE_COUNT]> {
-        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
+    /// Where a layer draws: its render target's colour and depth, or the
+    /// surface's HDR target and depth, plus that destination's texel size.
+    fn layer_destination(
+        &self,
+        layer: &RenderLayerState,
+    ) -> (&wgpu::TextureView, &wgpu::TextureView, (u32, u32)) {
+        match layer
+            .target
+            .as_deref()
+            .and_then(|id| self.render_targets.get(id))
+        {
+            Some(target) => (
+                &target.color_view,
+                &target.depth_view,
+                (target.width, target.height),
+            ),
+            None => (
+                &self.hdr_target.view,
+                &self.depth_view,
+                (self.config.width, self.config.height),
+            ),
+        }
+    }
+
+    /// The aspect ratio a layer's projection uses: its viewport rectangle on
+    /// its destination, not the surface.
+    fn layer_aspect(&self, layer: &RenderLayerState) -> f32 {
+        let (_, _, extent) = self.layer_destination(layer);
+        let (_, _, width, height) = viewport_pixels(layer.viewport, extent);
+        width as f32 / height.max(1) as f32
+    }
+
+    fn update_uniforms(&self, time_seconds: f32) -> Vec<LayerShadowData> {
         let mut shadow_sets = Vec::with_capacity(self.layers.len());
         for (index, layer) in self.layers.iter().enumerate() {
+            let aspect = self.layer_aspect(layer);
+            let (frame, shadow_data) = self.layer_uniforms(index, layer, time_seconds, aspect);
+            self.context.queue.write_buffer(
+                &self.frame_uniforms[index].buffer,
+                0,
+                bytemuck::bytes_of(&frame),
+            );
+            shadow_sets.push(shadow_data);
+        }
+        shadow_sets
+    }
+
+    /// The frame uniforms and shadow-pass data for one layer.
+    fn layer_uniforms(
+        &self,
+        index: usize,
+        layer: &RenderLayerState,
+        time_seconds: f32,
+        aspect: f32,
+    ) -> (FrameUniforms, LayerShadowData) {
+        {
             let view = &layer.view;
             let camera = view.camera_world.transform_point3(Vec3::ZERO);
             let (view_matrix, projection) = if layer.default_view {
@@ -1156,6 +2023,51 @@ impl<'surface> SurfaceRenderer<'surface> {
                 .normalize_or(Vec3::NEG_Z);
             let mut lights = [GpuLight::ambient(Vec3::ZERO, 0.0); MAX_LIGHTS];
             lights[..live].copy_from_slice(&view.lights[..live]);
+            // A point/spot light's shadow slot travels in its own record (see
+            // `FrameUniforms::point_spot_matrices`), so every candidate starts
+            // "no slot" and only the ones `assign_shadow_slots` grants get one.
+            for light in lights.iter_mut().take(live) {
+                let kind = light.vector_kind[3];
+                if (kind - LIGHT_KIND_POINT).abs() < 0.1 || (kind - LIGHT_KIND_SPOT).abs() < 0.1 {
+                    light.cone[2] = -1.0;
+                }
+            }
+            let assignments = if index == 0 {
+                assign_shadow_slots(&lights[..live], camera, MAX_SHADOW_SLOTS)
+            } else {
+                Vec::new()
+            };
+            let mut point_spot = [ShadowPassUniform {
+                view_projection: Mat4::IDENTITY.to_cols_array_2d(),
+                far: 1.0,
+                _padding: [0.0; 3],
+            }; MAX_SHADOW_SLOTS];
+            let mut point_spot_used = 0usize;
+            for assignment in &assignments {
+                let light = &lights[assignment.light_index];
+                let range = light.secondary_range[3].max(0.1);
+                if assignment.slot_count == 6 {
+                    let position = Vec3::from_slice(&light.vector_kind[..3]);
+                    let projection = point_shadow_projection(0.05, range);
+                    for (face, view_matrix) in
+                        cube_face_view_matrices(position).into_iter().enumerate()
+                    {
+                        point_spot[assignment.base_slot + face] = ShadowPassUniform {
+                            view_projection: (projection * view_matrix).to_cols_array_2d(),
+                            far: range,
+                            _padding: [0.0; 3],
+                        };
+                    }
+                } else {
+                    point_spot[assignment.base_slot] = ShadowPassUniform {
+                        view_projection: spot_shadow_matrix(light).to_cols_array_2d(),
+                        far: range,
+                        _padding: [0.0; 3],
+                    };
+                }
+                lights[assignment.light_index].cone[2] = assignment.base_slot as f32;
+                point_spot_used = point_spot_used.max(assignment.base_slot + assignment.slot_count);
+            }
             let view_projection = projection * view_matrix;
             let frame = FrameUniforms {
                 view_projection: view_projection.to_cols_array_2d(),
@@ -1172,15 +2084,25 @@ impl<'surface> SurfaceRenderer<'surface> {
                 shadow_matrices: cascades.map(|cascade| cascade.view_projection),
                 shadow_splits: cascades.map(|cascade| cascade.far),
                 shadow_params: [shadow_count, SHADOW_MAP_SIZE as f32, 0.0015, 0.0],
+                point_spot_matrices: point_spot.map(|slot| slot.view_projection),
+                point_spot_params: [
+                    point_spot_used as f32,
+                    POINT_SPOT_SHADOW_SIZE as f32,
+                    0.002,
+                    0.0,
+                ],
+                ibl_params: self.environment.params(),
             };
-            self.context.queue.write_buffer(
-                &self.frame_uniforms[index].buffer,
-                0,
-                bytemuck::bytes_of(&frame),
-            );
-            shadow_sets.push(cascades);
+            (
+                frame,
+                LayerShadowData {
+                    view_projection,
+                    cascades,
+                    point_spot,
+                    point_spot_used,
+                },
+            )
         }
-        shadow_sets
     }
 
     fn acquire_surface_texture(
@@ -1213,6 +2135,27 @@ impl<'surface> SurfaceRenderer<'surface> {
             )),
         }
     }
+}
+
+/// A normalized viewport rectangle in whole texels of `extent`, clamped so
+/// rounding can never push it past the destination's edge and never leaves
+/// it empty.
+pub(crate) fn viewport_pixels(viewport: [f32; 4], extent: (u32, u32)) -> (u32, u32, u32, u32) {
+    let (width, height) = (extent.0.max(1), extent.1.max(1));
+    let x = ((viewport[0] * width as f32).round() as u32).min(width - 1);
+    let y = ((viewport[1] * height as f32).round() as u32).min(height - 1);
+    let w = ((viewport[2] * width as f32).round() as u32).clamp(1, width - x);
+    let h = ((viewport[3] * height as f32).round() as u32).clamp(1, height - y);
+    (x, y, w, h)
+}
+
+fn validate_environment_intensity(intensity: f32) -> Result<(), SurfaceRendererError> {
+    if !intensity.is_finite() || !(0.0..=64.0).contains(&intensity) {
+        return Err(SurfaceRendererError::InvalidEnvironmentMap {
+            reason: format!("intensity must be finite and in [0, 64], received {intensity}"),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1326,6 +2269,7 @@ mod tests {
             model: Mat4::from_translation(Vec3::new(0.0, 0.0, z)),
             base_color: [1.0; 4],
             material_params: [0.0; 4],
+            bone_offset: -1.0,
         };
         let mut submissions = vec![
             entry(1, PipelineKind::BlendCulledNoDepthWrite, 2.0),
@@ -1423,6 +2367,51 @@ mod tests {
         );
     }
 
+    /// An XR eye's asymmetric frustum replaces the derived projection
+    /// wherever the renderer projects: the frame's view-projection and the
+    /// culling planes both come from `projection_matrix`.
+    #[test]
+    fn an_explicit_projection_overrides_the_derived_one() {
+        let mut view = ViewState::default();
+        let derived = projection_matrix(&view, 1.5);
+        // A left eye: frustum shifted so the right edge is wider than the left.
+        let eye = Mat4::perspective_rh(80f32.to_radians(), 1.0, 0.1, 100.0)
+            * Mat4::from_translation(Vec3::new(0.15, 0.0, 0.0));
+        view.projection_override = Some(eye);
+        assert_eq!(projection_matrix(&view, 1.5), eye);
+        assert_ne!(projection_matrix(&view, 1.5), derived);
+        let planes = frustum_planes(eye);
+        // The shift moves the frustum: a point just inside the derived
+        // left edge at z = -10 is outside the shifted frustum's left edge.
+        let derived_planes = frustum_planes(derived);
+        let probe = Vec3::new(-8.6, 0.0, -10.0);
+        assert!(sphere_inside(&derived_planes, probe, 0.0));
+        assert!(!sphere_inside(&planes, probe, 0.0));
+    }
+
+    #[test]
+    fn viewports_resolve_to_whole_texels_inside_the_destination() {
+        assert_eq!(viewport_pixels(FULL_VIEWPORT, (640, 480)), (0, 0, 640, 480));
+        // Side-by-side stereo halves tile the surface exactly.
+        assert_eq!(
+            viewport_pixels([0.0, 0.0, 0.5, 1.0], (641, 480)),
+            (0, 0, 321, 480)
+        );
+        assert_eq!(
+            viewport_pixels([0.5, 0.0, 0.5, 1.0], (641, 480)),
+            (321, 0, 320, 480)
+        );
+        // A rectangle that rounds past the edge is clamped, never empty.
+        assert_eq!(
+            viewport_pixels([0.999, 0.999, 0.001, 0.001], (10, 10)),
+            (9, 9, 1, 1)
+        );
+        assert_eq!(
+            viewport_pixels([0.25, 0.25, 0.5, 0.5], (0, 0)),
+            (0, 0, 1, 1)
+        );
+    }
+
     #[test]
     fn frame_arrays_are_length_checked_before_reaching_the_gpu() {
         // These come straight from a game's typed arrays. A short matrix array
@@ -1501,12 +2490,13 @@ mod tests {
 
     #[test]
     fn instance_data_matches_the_declared_vertex_attributes() {
-        // Ten vec4 attributes: 4x4 model, 4x4 normal matrix, colour, material.
+        // Seven vec4 attributes: 4x4 model, colour, material, and the skin
+        // lane (bone offset + 3 reserved floats).
         assert_eq!(
             std::mem::size_of::<InstanceData>(),
-            10 * 4 * std::mem::size_of::<f32>()
+            7 * 4 * std::mem::size_of::<f32>()
         );
-        assert_eq!(InstanceData::ATTRIBUTES.len(), 10);
+        assert_eq!(InstanceData::ATTRIBUTES.len(), 7);
     }
 
     #[test]
@@ -1549,7 +2539,22 @@ mod tests {
             );
         }
         assert_eq!(vertex, vec![0, 1, 2, 3, 4, 5]);
-        assert_eq!(instance, vec![6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(instance, vec![6, 7, 8, 9, 10, 11, 12]);
+        // Locations 13/14 carry the per-vertex SkinVertex buffer (see
+        // `surface::mesh::SkinVertex`).
+        let skin: Vec<u32> = crate::mesh::SkinVertex::ATTRIBUTES
+            .iter()
+            .map(|attribute| attribute.shader_location)
+            .collect();
+        assert_eq!(skin, vec![13, 14]);
+        for location in &skin {
+            assert!(!vertex.contains(location) && !instance.contains(location));
+        }
+        // WebGPU guarantees exactly 16 vertex attributes; the three buffers
+        // together must never exceed it or pipeline creation fails on every
+        // browser.
+        assert!(vertex.len() + instance.len() + skin.len() <= 16);
+        assert!(vertex.iter().chain(&instance).chain(&skin).all(|l| *l < 16));
     }
 
     /// Builds one packed light record in the wire layout the shader expects.
@@ -1738,6 +2743,9 @@ mod tests {
                 + 16
                 + MAX_LIGHTS * 64
                 + SHADOW_CASCADE_COUNT * 64
+                + 16
+                + 16
+                + MAX_SHADOW_SLOTS * 64
                 + 16
                 + 16
         );

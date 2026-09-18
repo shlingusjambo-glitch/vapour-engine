@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+sdk_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export VAPOUR_ENGINE_SOURCE="$sdk_root/sdk/engine-src/index.ts"
+export VAPOUR_MATH_SOURCE="$sdk_root/sdk/math-src/index.ts"
+export VAPOUR_GAMEPLAY_SOURCE="$sdk_root/sdk/gameplay-src/index.ts"
+export VAPOUR_WASM_ROOT="$sdk_root/runtime"
+export ESBUILD_BINARY_PATH="$sdk_root/cli/esbuild"
+exec "$sdk_root/cli/node" "$sdk_root/cli/vapour.mjs" "$@"

@@ -27,6 +27,7 @@ export * from "./ai/index.js";
 export * from "./net/index.js";
 export * from "./xr/index.js";
 export * from "./scripting/index.js";
+export * from "./integration/index.js";
 // Gameplay moved to `@vapour/gameplay` in Alpha 0.2.5. Re-exported here so
 // projects written against `@vapour/engine` keep working unchanged.
 export * from "@vapour/gameplay";

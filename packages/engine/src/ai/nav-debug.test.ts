@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { DebugDraw } from "../diagnostics/debug-draw.js";
-import { drawNavigationPath, drawNavMesh } from "./nav-debug.js";
+import { DEBUG_COLORS, DebugDraw } from "../diagnostics/debug-draw.js";
+import { Nav2D } from "../tilemap/nav-2d.js";
+import { Tilemap } from "../tilemap/tilemap.js";
+import { drawNav2D, drawNavigationPath, drawNavMesh } from "./nav-debug.js";
 import { bakeNavMesh } from "./navmesh.js";
 
 function floor() {
@@ -31,5 +33,21 @@ describe("navigation debug drawing", () => {
   it("validates offsets", () => {
     expect(() => drawNavMesh(new DebugDraw(), floor(), { heightOffset: Infinity })).toThrow(/finite/);
     expect(() => drawNavigationPath(new DebugDraw(), [[0,0,0]], NaN)).toThrow(/finite/);
+  });
+
+  it("draws a 2D nav grid, colouring blocked cells differently", () => {
+    const tilemap = new Tilemap({ tiles: [{ id: 1, collision: { kind: "solid" } }] });
+    const layer = tilemap.addLayer({ name: "walls", width: 4, height: 4 });
+    layer.set(2, 2, 1);
+    const nav = new Nav2D(tilemap);
+    nav.setBlocked(1, 1);
+    const debug = new DebugDraw();
+    drawNav2D(debug, nav, { bounds: { x0: 0, y0: 0, x1: 3, y1: 3 }, path: [[0, 0], [3, 3]] });
+    expect(debug.count).toBeGreaterThan(0);
+    expect(debug.primitives().every((primitive) => primitive.category === "navigation")).toBe(true);
+    const colors = new Set(debug.primitives().map((primitive) => primitive.color?.join(",")));
+    expect(colors.has(DEBUG_COLORS.green.join(","))).toBe(true); // open cells
+    expect(colors.has(DEBUG_COLORS.red.join(","))).toBe(true); // the solid tile
+    expect(colors.has(DEBUG_COLORS.orange.join(","))).toBe(true); // the dynamic obstacle
   });
 });

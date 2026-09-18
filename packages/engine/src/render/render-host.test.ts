@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorCamera } from "./editor-camera.js";
 import { FrameBuilder, composeTranslation } from "../core/frame-builder.js";
 import { validateMaterialUpload, WebGpuRenderHost } from "./host/index.js";
+import { packDecals } from "./decals.js";
+import { GpuParticleSystem } from "../particles/gpu-particles.js";
 import { defaultTransform, type SceneData } from "../core/scene-document.js";
 
 const originalNavigator = globalThis.navigator;
@@ -69,6 +71,7 @@ describe("WebGpuRenderHost", () => {
         JSON.stringify({ adapterName: "Test", tier: "baseline" }),
       ),
       upload_mesh: vi.fn(),
+      upload_skinned_mesh: vi.fn(),
       release_mesh: vi.fn(() => true),
       mesh_ids_json: vi.fn(() => "[]"),
       upload_texture_rgba8: vi.fn(),
@@ -243,6 +246,7 @@ describe("runtime meshes", () => {
         JSON.stringify({ adapterName: "Test", tier: "baseline" }),
       ),
       upload_mesh: vi.fn(),
+      upload_skinned_mesh: vi.fn(),
       release_mesh: vi.fn(() => true),
       mesh_ids_json: vi.fn(() => "[]"),
       upload_texture_rgba8: vi.fn(),
@@ -534,6 +538,221 @@ describe("runtime meshes", () => {
     expect(call[7]).toEqual(new Uint32Array([1, 1]));
     expect(call[8]).toEqual(new Uint32Array([3, 2]));
     expect((call[4] as Float32Array).length).toBe(32);
+    host.destroy();
+  });
+
+  it("uploads and replays an environment map, and derives one from the sky", async () => {
+    browserGlobals();
+    const renderer = {
+      ...fakeRenderer(),
+      upload_environment_cubemap: vi.fn(),
+      set_environment_from_sky: vi.fn(),
+      clear_environment: vi.fn(),
+    };
+    const host = new WebGpuRenderHost(
+      { width: 0, height: 0, clientWidth: 8, clientHeight: 8 } as HTMLCanvasElement,
+      {
+        loadModule: async () => ({
+          default: async () => undefined,
+          WebGpuRenderer: { create: async () => renderer },
+        }),
+      },
+    );
+    const faces = new Uint8Array(2 * 2 * 4 * 6).fill(128);
+    // Before the GPU exists the upload is remembered and replayed.
+    host.uploadEnvironment({ faceSize: 2, faces, intensity: 1.5 });
+    expect(renderer.upload_environment_cubemap).not.toHaveBeenCalled();
+    await host.initialize();
+    expect(renderer.upload_environment_cubemap).toHaveBeenCalledWith(2, faces, true, 1.5);
+
+    expect(() => host.uploadEnvironment({ faceSize: 2, faces: faces.subarray(1) })).toThrow(
+      /needs 96 RGBA8 bytes, received 95/,
+    );
+    expect(() => host.uploadEnvironment({ faceSize: 2, faces, intensity: 65 })).toThrow(
+      /intensity/,
+    );
+    host.deriveEnvironmentFromSky(0.8);
+    expect(renderer.set_environment_from_sky).toHaveBeenCalledWith(0.8);
+    host.clearEnvironment();
+    expect(renderer.clear_environment).toHaveBeenCalledTimes(1);
+    host.destroy();
+  });
+
+  it("names a stale WASM build when it lacks environment support", async () => {
+    browserGlobals();
+    const renderer = fakeRenderer();
+    const host = new WebGpuRenderHost(
+      { width: 0, height: 0, clientWidth: 8, clientHeight: 8 } as HTMLCanvasElement,
+      {
+        loadModule: async () => ({
+          default: async () => undefined,
+          WebGpuRenderer: { create: async () => renderer },
+        }),
+      },
+    );
+    await host.initialize();
+    expect(() =>
+      host.uploadEnvironment({ faceSize: 1, faces: new Uint8Array(24) }),
+    ).toThrow(/pnpm build:wasm/);
+    host.destroy();
+  });
+
+  it("submits and replays decals against an uploaded atlas", async () => {
+    browserGlobals();
+    const renderer = { ...fakeRenderer(), set_decals: vi.fn() };
+    const host = new WebGpuRenderHost(
+      { width: 0, height: 0, clientWidth: 8, clientHeight: 8 } as HTMLCanvasElement,
+      {
+        loadModule: async () => ({
+          default: async () => undefined,
+          WebGpuRenderer: { create: async () => renderer },
+        }),
+      },
+    );
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const packed = packDecals([{ matrix: identity }]);
+    expect(() => host.submitDecals(packed, "missing")).toThrow(/has not been uploaded/);
+    host.uploadTexture("decals:atlas", { width: 1, height: 1, pixels: new Uint8Array(4) });
+    host.submitDecals(packed, "decals:atlas");
+    await host.initialize();
+    // Textures replay before decals, so the atlas exists when the set lands.
+    const order = renderer.upload_texture_rgba8.mock.invocationCallOrder[0]!;
+    expect(renderer.set_decals.mock.invocationCallOrder[0]!).toBeGreaterThan(order);
+    expect(renderer.set_decals).toHaveBeenCalledWith("decals:atlas", packed);
+    host.submitDecals(new Float32Array(0));
+    expect(renderer.set_decals).toHaveBeenLastCalledWith("", new Float32Array(0));
+    expect(() => host.submitDecals(new Float32Array(27))).toThrow(/28 values/);
+    host.destroy();
+  });
+
+  it("replays render targets before the materials that sample them and passes layer targets", async () => {
+    browserGlobals();
+    const renderer = {
+      ...fakeRenderer(),
+      create_render_target: vi.fn(),
+      release_render_target: vi.fn(() => true),
+    };
+    const host = new WebGpuRenderHost(
+      { width: 0, height: 0, clientWidth: 8, clientHeight: 8 } as HTMLCanvasElement,
+      {
+        loadModule: async () => ({
+          default: async () => undefined,
+          WebGpuRenderer: { create: async () => renderer },
+        }),
+      },
+    );
+    host.createRenderTarget("rt:monitor", { scale: 0.5 });
+    host.createRenderTarget("rt:map", { width: 256, height: 256 });
+    host.defineMaterial("screen", { textures: { baseColor: "rt:monitor" } });
+    await host.initialize();
+    expect(renderer.create_render_target).toHaveBeenCalledWith("rt:monitor", 0, 0, 0.5);
+    expect(renderer.create_render_target).toHaveBeenCalledWith("rt:map", 256, 256, 0);
+    expect(renderer.create_render_target.mock.invocationCallOrder[0]!).toBeLessThan(
+      renderer.define_material_json.mock.invocationCallOrder[0]!,
+    );
+    const world = new FrameBuilder(1);
+    world.draw("builtin:cube", composeTranslation(new Float32Array(16), 0, 0, 0));
+    host.submitLayers([
+      { frame: world.pack(), target: "rt:monitor" },
+      { frame: world.pack(), viewport: { x: 0, y: 0, width: 0.5, height: 1 } },
+    ]);
+    const call = renderer.set_render_layers.mock.calls[0]!;
+    expect(call[15]).toBe(JSON.stringify(["rt:monitor", ""]));
+    expect([...(call[16] as Float32Array)]).toEqual([0, 0, 1, 1, 0, 0, 0.5, 1]);
+    expect(host.releaseRenderTarget("rt:map")).toBe(true);
+    expect(renderer.release_render_target).toHaveBeenCalledWith("rt:map");
+    host.destroy();
+  });
+
+  it("surfaces which culling path ran and replays the preference", async () => {
+    browserGlobals();
+    const renderer = {
+      ...fakeRenderer(),
+      set_gpu_culling: vi.fn(),
+      render: vi
+        .fn()
+        .mockReturnValueOnce(
+          JSON.stringify({ drawCalls: 3, triangles: 36, cpuEncodeMs: 0.2, gpuCulling: true, culledInstances: null }),
+        )
+        .mockReturnValueOnce(
+          JSON.stringify({ drawCalls: 1, triangles: 12, cpuEncodeMs: 0.3, gpuCulling: false, culledInstances: 7 }),
+        ),
+    };
+    const host = new WebGpuRenderHost({ width: 0, height: 0, clientWidth: 8, clientHeight: 8 } as HTMLCanvasElement, {
+      loadModule: async () => ({
+        default: async () => undefined,
+        WebGpuRenderer: { create: async () => renderer },
+      }),
+    });
+    host.setGpuCulling(false);
+    await host.initialize();
+    expect(renderer.set_gpu_culling).toHaveBeenCalledWith(false);
+    host.setGpuCulling(true);
+    expect(renderer.set_gpu_culling).toHaveBeenLastCalledWith(true);
+    expect(host.renderFrame(16)).toMatchObject({ culling: "gpu", drawCalls: 3 });
+    expect(host.renderFrame(32)).toMatchObject({ culling: "cpu", culledInstances: 7 });
+    host.destroy();
+  });
+
+  it("drives GPU particle systems through the WASM particle API", async () => {
+    browserGlobals();
+    const renderer = {
+      ...fakeRenderer(),
+      set_gpu_particles: vi.fn(),
+      create_particle_system: vi.fn(),
+      update_particle_system: vi.fn(),
+      clear_particle_system: vi.fn(),
+      release_particle_system: vi.fn(() => true),
+      particle_system_stats_json: vi.fn(() =>
+        JSON.stringify({ gpu: true, requested: 12, alive: null, emitted: null, expired: null, dropped: null }),
+      ),
+    };
+    const host = new WebGpuRenderHost({ width: 0, height: 0, clientWidth: 8, clientHeight: 8 } as HTMLCanvasElement, {
+      loadModule: async () => ({
+        default: async () => undefined,
+        WebGpuRenderer: { create: async () => renderer },
+      }),
+    });
+    // Systems live in the renderer, so before initialization there is none.
+    expect(host.supportsGpuParticles()).toBe(false);
+    expect(new GpuParticleSystem(host, { rate: 0 }).mode).toBe("cpu");
+    await host.initialize();
+    expect(renderer.set_gpu_particles).toHaveBeenCalledWith(true);
+    expect(host.supportsGpuParticles()).toBe(true);
+    const system = new GpuParticleSystem(host, { capacity: 64, rate: 0, burst: 12, seed: 9 }, "fx");
+    expect(system.mode).toBe("gpu");
+    const [id, json] = renderer.create_particle_system.mock.calls[0]!;
+    expect(id).toBe("fx");
+    expect(JSON.parse(json as string)).toMatchObject({ capacity: 64, seed: 9, shape: "point", sizeLut: expect.any(Array) });
+    system.setOrigin([1, 2, 3]);
+    system.play();
+    system.update(0.5);
+    expect(renderer.update_particle_system).toHaveBeenCalledWith("fx", 0.5, 12, 1, 2, 3);
+    expect(system.stats()).toMatchObject({ mode: "gpu", requested: 12, alive: 12, emitted: undefined });
+    system.clear();
+    expect(renderer.clear_particle_system).toHaveBeenCalledWith("fx");
+    system.release();
+    expect(renderer.release_particle_system).toHaveBeenCalledWith("fx");
+    host.destroy();
+  });
+
+  it("pins the drawing buffer to a fixed size for XR eye layouts", async () => {
+    browserGlobals();
+    const renderer = fakeRenderer();
+    const canvas = { width: 0, height: 0, clientWidth: 8, clientHeight: 8 } as HTMLCanvasElement;
+    const host = new WebGpuRenderHost(canvas, {
+      loadModule: async () => ({
+        default: async () => undefined,
+        WebGpuRenderer: { create: async () => renderer },
+      }),
+    });
+    await host.initialize();
+    host.setFixedSize(3664, 1920);
+    expect([canvas.width, canvas.height]).toEqual([3664, 1920]);
+    expect(renderer.resize).toHaveBeenLastCalledWith(3664, 1920);
+    expect(() => host.setFixedSize(0, 10)).toThrow(/positive whole pixel/);
+    host.setFixedSize(undefined);
+    expect([canvas.width, canvas.height]).toEqual([8, 8]);
     host.destroy();
   });
 });

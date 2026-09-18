@@ -12,12 +12,30 @@
  */
 import type { FontAtlas } from "./text-2d.js";
 
+/** An outline an SDF material renders around the fill from the same quad. */
+export interface TextOutline {
+  /** Width in design pixels. */
+  readonly width: number;
+  readonly color: readonly [number, number, number, number];
+}
+
+/** A drop shadow: the same glyph, offset and optionally softened. */
+export interface TextShadow {
+  /** Offset in design pixels, +X right and +Y down. */
+  readonly offset: readonly [number, number];
+  readonly color: readonly [number, number, number, number];
+  /** Extra blur radius in design pixels. */
+  readonly softness?: number;
+}
+
 export interface RichTextStyle {
   readonly color?: readonly [number, number, number, number];
   readonly bold?: boolean;
   readonly italic?: boolean;
   /** Multiplies the base font size. */
   readonly scale?: number;
+  readonly outline?: TextOutline;
+  readonly shadow?: TextShadow;
 }
 
 export interface RichTextRun {
@@ -31,6 +49,10 @@ export interface RichTextParseOptions {
   /** Colours markup may name, so content cannot invent arbitrary values. */
   readonly palette?: Readonly<Record<string, readonly [number, number, number, number]>>;
   readonly baseStyle?: RichTextStyle;
+  /** Named outlines `[outline=name]` may apply, for the same reason as `palette`. */
+  readonly outlines?: Readonly<Record<string, TextOutline>>;
+  /** Named shadows `[shadow=name]` may apply. */
+  readonly shadows?: Readonly<Record<string, TextShadow>>;
   /** Report unknown tags rather than silently dropping them. */
   readonly onUnknownTag?: (tag: string) => void;
 }
@@ -40,7 +62,8 @@ const TAG = /\[(\/?)([a-z]+)(?:=([^\]]*))?\]/gi;
 /**
  * Parses inline markup into styled runs.
  *
- * Supported: `[b]`, `[i]`, `[color=name]`, `[size=1.5]`, `[icon=name]`.
+ * Supported: `[b]`, `[i]`, `[color=name]`, `[size=1.5]`, `[icon=name]`,
+ * `[outline=name]`, `[shadow=name]`.
  * Everything else is left as literal text and reported, because a translator
  * who typos a tag should see their text, not lose it.
  */
@@ -62,7 +85,7 @@ export function parseRichText(source: string, options: RichTextParseOptions = {}
     const closing = match[1];
     const tag = (match[2] ?? "").toLowerCase();
     const value = match[3];
-    const known = tag === "b" || tag === "i" || tag === "color" || tag === "size" || tag === "icon";
+    const known = tag === "b" || tag === "i" || tag === "color" || tag === "size" || tag === "icon" || tag === "outline" || tag === "shadow";
     if (!known) {
       options.onUnknownTag?.(tag);
       continue;
@@ -93,6 +116,16 @@ export function parseRichText(source: string, options: RichTextParseOptions = {}
     if (tag === "size" && value) {
       const parsed = Number.parseFloat(value);
       if (Number.isFinite(parsed) && parsed > 0) next.scale = (current().scale ?? 1) * parsed;
+    }
+    if (tag === "outline" && value) {
+      const outline = options.outlines?.[value];
+      if (outline) next.outline = outline;
+      else options.onUnknownTag?.("outline=" + value);
+    }
+    if (tag === "shadow" && value) {
+      const shadow = options.shadows?.[value];
+      if (shadow) next.shadow = shadow;
+      else options.onUnknownTag?.("shadow=" + value);
     }
     stack.push(next as RichTextStyle);
   }
@@ -251,8 +284,11 @@ export function wrapText(
           chunk += character;
           chunkWidth += characterWidth;
         }
-        line = chunk;
-        width = chunkWidth;
+        // A trailing space left over from the split must not start the next
+        // line, or a wrapped paragraph gets a whitespace-only line.
+        line = chunk.trimStart();
+        width = 0;
+        for (const character of line) width += advanceOf(character);
         continue;
       }
       line += unit;

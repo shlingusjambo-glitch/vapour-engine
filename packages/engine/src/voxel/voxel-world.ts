@@ -22,6 +22,9 @@ export interface VoxelBlockDefinition {
   readonly opaque: boolean;
   /** Linear RGBA vertex colour used by the standard voxel mesher. */
   readonly color: readonly [number, number, number, number];
+  /** Block light level this block emits, 0 (none) through 15 (a torch/lava
+   * equivalent). Defaults to 0. See `VoxelLightField`. */
+  readonly emission?: number;
 }
 
 /** Stable block metadata. The world stores only compact numeric IDs; gameplay,
@@ -47,6 +50,9 @@ export class VoxelPalette {
     if (this.#blocks.has(definition.id)) throw new Error(`Block ${String(definition.id)} is already defined.`);
     if (definition.color.length !== 4 || definition.color.some((value) => !Number.isFinite(value))) {
       throw new Error(`Block '${definition.name}' needs four finite colour channels.`);
+    }
+    if (definition.emission !== undefined && (!Number.isInteger(definition.emission) || definition.emission < 0 || definition.emission > 15)) {
+      throw new Error(`Block '${definition.name}' emission must be an integer from 0 through 15.`);
     }
     const color: [number, number, number, number] = [
       definition.color[0],

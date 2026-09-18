@@ -8,7 +8,7 @@ release_root="$release_parent/vapour-engine-$version"
 staging="$release_parent/.vapour-engine-$version.staging"
 
 rm -rf "$staging"
-mkdir -p "$staging/cli" "$staging/editor" "$staging/runtime" "$staging/sdk/engine" "$staging/sdk/engine-src" "$staging/examples"
+mkdir -p "$staging/cli" "$staging/editor" "$staging/runtime" "$staging/sdk/engine" "$staging/sdk/engine-src" "$staging/sdk/math-src" "$staging/sdk/gameplay-src" "$staging/examples"
 
 cd "$repo_root"
 pnpm build
@@ -17,9 +17,22 @@ pnpm --filter @vapour/cli exec esbuild src/index.ts --bundle --platform=node --f
   --outfile="$staging/cli/vapour.mjs"
 
 esbuild_version="$(node -p "require('$repo_root/packages/cli/node_modules/esbuild/package.json').version")"
-esbuild_binary="$(find "$repo_root/node_modules/.pnpm" -path "*/@esbuild+linux-x64@$esbuild_version/node_modules/@esbuild/linux-x64/bin/esbuild" -type f -print -quit)"
+# The SDK bundles a native esbuild binary for whatever platform builds it —
+# there is no cross-compiling here, only picking the right @esbuild/<platform>
+# package already on disk for the host running this script.
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) esbuild_platform=linux-x64 ;;
+  Linux-aarch64) esbuild_platform=linux-arm64 ;;
+  Darwin-x86_64) esbuild_platform=darwin-x64 ;;
+  Darwin-arm64) esbuild_platform=darwin-arm64 ;;
+  *)
+    echo "Unsupported host platform for the SDK build: $(uname -s)-$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+esbuild_binary="$(find "$repo_root/node_modules/.pnpm" -path "*/@esbuild+$esbuild_platform@$esbuild_version/node_modules/@esbuild/$esbuild_platform/bin/esbuild" -type f -print -quit)"
 if [[ -z "$esbuild_binary" ]]; then
-  echo "Could not locate the installed Linux x64 esbuild binary." >&2
+  echo "Could not locate the installed $esbuild_platform esbuild binary (version $esbuild_version)." >&2
   exit 1
 fi
 cp "$esbuild_binary" "$staging/cli/esbuild"
@@ -30,6 +43,11 @@ cp -R "$repo_root/packages/editor/dist/." "$staging/editor/"
 cp -R "$repo_root/packages/engine/wasm/." "$staging/runtime/"
 cp -R "$repo_root/packages/engine/dist/." "$staging/sdk/engine/"
 cp -R "$repo_root/packages/engine/src/." "$staging/sdk/engine-src/"
+# @vapour/engine imports @vapour/math and @vapour/gameplay as bare specifiers;
+# the CLI aliases both to these sources exactly as it does the engine's, so a
+# standalone SDK (no node_modules next to engine-src) still resolves them.
+cp -R "$repo_root/packages/math/src/." "$staging/sdk/math-src/"
+cp -R "$repo_root/packages/gameplay/src/." "$staging/sdk/gameplay-src/"
 cp "$repo_root/packages/engine/node_modules/@webgpu/types/dist/index.d.ts" "$staging/sdk/webgpu-types.d.ts"
 cp -R "$repo_root/docs" "$staging/docs"
 cp -R "$repo_root/templates" "$staging/templates"
@@ -51,7 +69,13 @@ cp "$staging/runtime/vapour_runtime_bg.wasm" "$staging/editor/vapour_runtime_bg.
 printf '%s\n' "$version" > "$staging/VERSION"
 chmod +x "$staging/vapour" "$staging/vapour-editor" "$staging/cli/esbuild" "$staging/cli/node"
 
-(cd "$staging" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+if command -v sha256sum >/dev/null 2>&1; then
+  hash_cmd=(sha256sum)
+else
+  # macOS ships shasum, not sha256sum; -a 256 matches the same algorithm.
+  hash_cmd=(shasum -a 256)
+fi
+(cd "$staging" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 "${hash_cmd[@]}" > SHA256SUMS)
 rm -rf "$release_root"
 mv "$staging" "$release_root"
 echo "Built standalone Vapour Engine SDK: $release_root"

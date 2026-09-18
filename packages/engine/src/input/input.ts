@@ -1,4 +1,29 @@
-export type InputDevice = "keyboard" | "pointer" | "gamepad";
+import type { XrHandedness } from "../xr/xr.js";
+
+export type InputDevice = "keyboard" | "pointer" | "gamepad" | "xr";
+
+/** The target-ray pose space, for `control: "pose"` bindings. */
+export const XR_TARGET_RAY_SPACE = "target-ray";
+/** The grip pose space, for `control: "pose"` bindings. */
+export const XR_GRIP_SPACE = "grip";
+
+/**
+ * One XR controller or tracked hand for a single frame.
+ *
+ * Deliberately structural rather than a WebXR object: `XrInputSnapshot` from
+ * the `xr` subsystem satisfies it, and so does a plain object literal, so XR
+ * bindings resolve headlessly in tests, replays, and recorded sessions exactly
+ * the way `setKey` and the `Gamepad` argument already do for other devices.
+ * Transforms are column-major 16-element matrices, the WebXR layout.
+ */
+export interface XrInputDeviceState {
+  readonly handedness: XrHandedness;
+  readonly buttons: readonly { readonly value: number; readonly pressed: boolean; readonly touched: boolean }[];
+  readonly axes: ArrayLike<number>;
+  readonly targetRayTransform?: ArrayLike<number> | undefined;
+  readonly gripTransform?: ArrayLike<number> | undefined;
+  readonly joints?: readonly { readonly name: string; readonly transform: ArrayLike<number> }[] | undefined;
+}
 
 export type InputBinding =
   | { readonly device: "keyboard"; readonly code: string; readonly scale?: number }
@@ -11,6 +36,36 @@ export type InputBinding =
       readonly index: number;
       readonly scale?: number;
       readonly deadZone?: number;
+    }
+  /** An XR controller button, by `xr-standard` index: 0 trigger, 1 squeeze,
+   * 2 touchpad, 3 thumbstick, 4 and 5 the face buttons. `touch` resolves the
+   * capacitive touched flag rather than the pressed value. */
+  | {
+      readonly device: "xr";
+      readonly hand: XrHandedness;
+      readonly control: "button" | "touch";
+      readonly index: number;
+      readonly scale?: number;
+    }
+  /** An XR controller axis: 0 and 1 the touchpad, 2 and 3 the thumbstick. */
+  | {
+      readonly device: "xr";
+      readonly hand: XrHandedness;
+      readonly control: "axis";
+      readonly index: number;
+      readonly scale?: number;
+      readonly deadZone?: number;
+    }
+  /** One component of a tracked pose, in reference-space metres. `space` is
+   * {@link XR_TARGET_RAY_SPACE}, {@link XR_GRIP_SPACE}, or a hand-joint name
+   * such as `index-finger-tip`. */
+  | {
+      readonly device: "xr";
+      readonly hand: XrHandedness;
+      readonly control: "pose";
+      readonly space: string;
+      readonly axis: "x" | "y" | "z";
+      readonly scale?: number;
     };
 
 export interface InputActionDefinition {
@@ -43,6 +98,7 @@ export class InputSystem {
   readonly #pointerPosition = { x: 0, y: 0 };
   readonly #virtualValues = new Map<string, number>();
   #detach: (() => void) | undefined;
+  #lastDevice: InputDevice | undefined;
 
   constructor(definitions: readonly InputActionDefinition[]) {
     for (const definition of definitions) {
@@ -103,13 +159,28 @@ export class InputSystem {
     this.#wheelDelta.y = 0;
   }
 
-  update(gamepads: readonly (Gamepad | null)[] = []): void {
+  /**
+   * Resolves every action for this frame.
+   *
+   * `xrInputs` is the current frame's XR controllers and tracked hands, which
+   * is `XrFrameSnapshot.inputs` in a real session and a plain array anywhere
+   * else. It is a per-frame argument for the same reason `gamepads` is: the
+   * browser hands these out fresh each frame and the input system does not own
+   * their lifetime.
+   */
+  update(gamepads: readonly (Gamepad | null)[] = [], xrInputs: readonly XrInputDeviceState[] = []): void {
     for (const [name, definition] of this.#definitions) {
       const state = this.#actions.get(name)!;
       state.previous = state.value;
       let value = 0;
       for (const binding of definition.bindings) {
-        value += this.#bindingValue(binding, gamepads);
+        const contribution = this.#bindingValue(binding, gamepads, xrInputs);
+        // A tracked pose is never zero at rest, so it reports presence rather
+        // than actuation and must not claim to be the player's active device.
+        if (contribution !== 0 && !(binding.device === "xr" && binding.control === "pose")) {
+          this.#lastDevice = binding.device;
+        }
+        value += contribution;
       }
       value += this.#virtualValues.get(name) ?? 0;
       state.value = definition.kind === "button"
@@ -140,6 +211,12 @@ export class InputSystem {
   /** Latest pointer position in viewport CSS pixels. */
   get pointerPosition(): Readonly<{ x: number; y: number }> { return this.#pointerPosition; }
 
+  /** The device whose binding most recently contributed a non-zero value, so
+   * UI can show matching prompts. Resolved per binding rather than per action,
+   * because an action bound to a key *and* an XR trigger is answered wrongly by
+   * looking at the action's first binding. */
+  get lastDevice(): InputDevice | undefined { return this.#lastDevice; }
+
   /** Deterministic test and virtual-controller injection point. */
   setKey(code: string, pressed: boolean): void {
     if (pressed) this.#keys.add(code);
@@ -164,7 +241,9 @@ export class InputSystem {
    * Live rebinding does not require detaching browser listeners. */
   defineAction(definition: InputActionDefinition): void {
     if (definition.name.trim() === "") throw new Error("Input action names cannot be empty.");
-    if (definition.bindings.length === 0) throw new Error(`Input action '${definition.name}' has no bindings.`);
+    // An action with no bindings is legal: a player slot without a gamepad or
+    // headset still defines every action so gameplay code reads zeros rather
+    // than throwing, and virtual (touch) input can still drive it.
     validateBindings(definition.bindings);
     this.#definitions.set(definition.name, {
       ...definition,
@@ -211,7 +290,7 @@ export class InputSystem {
     this.#wheelDelta.y += y;
   }
 
-  #bindingValue(binding: InputBinding, gamepads: readonly (Gamepad | null)[]): number {
+  #bindingValue(binding: InputBinding, gamepads: readonly (Gamepad | null)[], xrInputs: readonly XrInputDeviceState[]): number {
     const scale = binding.scale ?? 1;
     if (binding.device === "keyboard") {
       return (this.#keys.has(binding.code) ? 1 : 0) * scale;
@@ -221,6 +300,24 @@ export class InputSystem {
       if (binding.axis === "wheelX") return this.#wheelDelta.x * scale;
       if (binding.axis === "wheelY") return this.#wheelDelta.y * scale;
       return this.#pointerDelta[binding.axis] * scale;
+    }
+    if (binding.device === "xr") {
+      // An absent controller reads as zero rather than throwing: hands and
+      // controllers appear and disappear mid-session, and that is normal.
+      const device = xrInputs.find((candidate) => candidate.handedness === binding.hand);
+      if (device === undefined) return 0;
+      if (binding.control === "button") return (device.buttons[binding.index]?.value ?? 0) * scale;
+      if (binding.control === "touch") return (device.buttons[binding.index]?.touched === true ? 1 : 0) * scale;
+      if (binding.control === "axis") {
+        const value = device.axes[binding.index] ?? 0;
+        return (Math.abs(value) >= (binding.deadZone ?? 0.15) ? value : 0) * scale;
+      }
+      if (binding.control === "pose") {
+        const transform = xrPoseTransform(device, binding.space);
+        if (transform === undefined) return 0;
+        return (transform[12 + POSE_AXIS[binding.axis]] ?? 0) * scale;
+      }
+      return 0;
     }
     const gamepad = gamepads[binding.gamepad];
     if (gamepad === null || gamepad === undefined) return 0;
@@ -302,10 +399,26 @@ export class PointerLockController {
   readonly #error = (event: Event): void => { this.#options.onError?.(event); };
 }
 
+const POSE_AXIS = { x: 0, y: 1, z: 2 } as const;
+
+/** Column-major transform of a named XR pose space, or undefined when the
+ * device does not currently expose it. */
+function xrPoseTransform(device: XrInputDeviceState, space: string): ArrayLike<number> | undefined {
+  if (space === XR_TARGET_RAY_SPACE) return device.targetRayTransform;
+  if (space === XR_GRIP_SPACE) return device.gripTransform;
+  return device.joints?.find((joint) => joint.name === space)?.transform;
+}
+
 function validateBindings(bindings: readonly InputBinding[]): void {
-  if (bindings.length === 0) throw new Error("Input actions need at least one binding.");
   for (const binding of bindings) {
     if (binding.device === "keyboard" && binding.code.trim() === "") throw new Error("Keyboard binding codes cannot be empty.");
+    if (binding.device === "xr") {
+      if (binding.control === "pose") {
+        if (binding.space.trim() === "") throw new Error("XR pose bindings need a pose space: 'target-ray', 'grip', or a hand-joint name.");
+      } else if (!Number.isInteger(binding.index) || binding.index < 0) {
+        throw new Error("XR button and axis indices must be non-negative integers.");
+      }
+    }
     if (binding.device === "pointer" && binding.button !== undefined && (!Number.isInteger(binding.button) || binding.button < 0)) {
       throw new Error("Pointer binding buttons must be non-negative integers.");
     }

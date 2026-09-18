@@ -67,11 +67,95 @@ objects, so gameplay code is not coupled to a math library. Compose their
 outputs, clamp acceleration, then pass movement through the appropriate physics
 controller—steering does not bypass collision detection.
 
+## NavMesh baking
+
+`bakeNavMesh` voxelizes triangles into a heightfield of walkable spans (the
+same shape of algorithm Recast uses), connects spans a step apart, and erodes
+by agent radius. `NavMesh` then answers `findPath`, `nearestSpan`,
+`isWalkable`, and holds dynamic obstacles (`setObstacle`/`removeObstacle`) and
+off-mesh links (`addOffMeshLink`) for doors, ladders, and jumps. Assets
+round-trip through `serializeNavMesh`/`deserializeNavMesh`.
+
+### Localized rebaking
+
+`NavMesh.rebakeRegion(input, region)` rebakes only the spans touching a
+world-space AABB and splices them back in, instead of rebaking the whole
+mesh — the operation a streaming world needs when a chunk loads in or a
+player edits terrain far from everything else.
+
+```ts
+const report = navmesh.rebakeRegion(updatedChunkGeometry, {
+  minX: 17, maxX: 23, minZ: 17, maxZ: 23,
+});
+report.navmesh;             // the spliced-in result
+report.spansAdded;          // new geometry inside the region
+report.spansRemoved;        // geometry that disappeared
+report.spansModified;       // area/cost changes at an unchanged position
+report.spansRebaked;        // total spans reprocessed (region + halo)
+report.offMeshLinksInvalidated; // off-mesh links whose endpoint vanished
+```
+
+`input` must describe the region's *current* geometry, not a delta — an
+edited-out area with no covering triangle bakes to empty space, which is how
+removed geometry is represented. Two rings sized from the agent radius keep
+the splice correct: a halo of `ceil(agentRadius / cellSize) + 1` columns
+where span *existence* is recomputed (erosion cannot be affected further out
+than that from a change), and one further ring where only *links* are
+recomputed against the halo's new spans. Everything outside is mechanically
+unreachable by the edit and carries over unchanged in content; only its
+numeric index can shift, because the span array has no gaps.
+
+**A localized rebake of the final geometry is required to match a full
+rebake of the same geometry, span for span and link for link** (compared by
+position rather than raw index, since index is an array-position artifact,
+not semantic identity) — that equivalence is the feature's entire point, and
+it's what `navmesh.test.ts`'s `rebakeRegion` suite asserts directly.
+
+## 2D navigation
+
+`Nav2D` (in `tilemap/nav-2d.ts`) is grid pathfinding over a `Tilemap`,
+reusing the same `findPath` and the navmesh module's `smoothPath` rather than
+a second pathfinder or a second string-puller:
+
+```ts
+const nav = new Nav2D(tilemap, { agentRadius: 1 });
+nav.setBlocked(4, 4); // a crate, another agent, a closed door
+const result = nav.findPath([1, 1], [8, 8]);
+result.status;  // "complete" | "unreachable" | "budget-exceeded"
+result.cells;   // the raw grid corridor
+result.points;  // string-pulled: the route to actually walk
+```
+
+Walkability comes from the tilemap's own collision (`Tilemap.tileAt`), so a
+level's navigation data can never drift out of sync with what actually
+blocks movement — only `solid` tiles block by default; a `platform` or
+`slope` tile is left walkable, since a top-down/side-view grid agent can
+still occupy that cell. `agentRadius` (in whole tiles) inflates every check
+to the agent's full footprint rather than testing clearance only at its
+centre. `drawNav2D` in `ai/nav-debug.ts` renders a `Nav2D`'s grid and a path
+alongside the existing 3D navmesh debug draw.
+
 ## Current boundary
 
-These APIs provide reusable AI execution, graph search, and local steering.
-Voxel walk-surface extraction, navmesh baking, dynamic navmesh obstacles,
-behavior-tree editor tooling, and crowd simulation are not implemented yet.
-CubeGame's zombie/animal/boss choices remain game content; its generic state
-execution, rate limiting, path searches, and movement targets can now migrate
-to these engine APIs.
+Voxel walk-surface extraction, behavior-tree editor tooling, and crowd
+simulation are not implemented yet. CubeGame's zombie/animal/boss choices
+remain game content; its generic state execution, rate limiting, path
+searches, and movement targets can now migrate to these engine APIs.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import bakeNavMesh, Crowd
+
+export func patrol(mesh, start, goal):
+    var navmesh = bakeNavMesh({ positions: mesh.positions, indices: mesh.indices }, { cellSize: 1, agentRadius: 0.5 })
+    var crowd = new Crowd(navmesh)
+    var agent = crowd.addAgent({ position: start, maxSpeed: 4 })
+    crowd.setDestination(agent, goal)
+    for step in range(600):
+        crowd.update(1 / 60)
+    return agent.state
+```

@@ -3,6 +3,7 @@ import {
   GameRuntime,
   ThirdPersonMotor3d,
   createPhysicsWorld3d,
+  captureScreenshot,
   importGltf,
   uploadGltfAsset,
   type GameContext,
@@ -21,6 +22,7 @@ const loadingText = loading.querySelector("span")!;
 const modeLabel = document.querySelector<HTMLSpanElement>("#mode")!;
 const speedLabel = document.querySelector<HTMLDivElement>("#speed")!;
 const statsLabel = document.querySelector<HTMLDivElement>("#stats")!;
+const captureImage = document.querySelector<HTMLImageElement>("#capture")!;
 const assets = new Map<string, GltfAsset>();
 let physics: PhysicsWorld3dBridge;
 let player: ThirdPersonMotor3d;
@@ -31,6 +33,8 @@ let viewPitch = -0.17;
 let daylight = 0;
 let lastEnter = false;
 let runtime!: GameRuntime;
+let captureRequested = new URLSearchParams(location.search).has("capture");
+let capturePending = false;
 
 const hooks = {
   async start(game: GameContext) {
@@ -106,7 +110,12 @@ const hooks = {
     if (daylight === 2) {
       for (const z of [-80, -48, -16, 16, 48, 80]) game.frame.lights.addPoint([8, 5.5, z], [1, 0.52, 0.18], 18, 24);
     }
-    game.frame.setEnvironment({ clearColor: [light.sky[2][0], light.sky[2][1], light.sky[2][2], 1], fog: { mode: "exponential", color: light.sky[1], density: daylight === 2 ? 0.009 : 0.0045 }, sky: { mode: "procedural", zenithColor: light.sky[0], horizonColor: light.sky[1], groundColor: light.sky[2], horizonCurve: 0.7, sunAngularRadius: 0.006 } });
+    const clearProbe = new URLSearchParams(location.search).has("clearprobe");
+    game.frame.setEnvironment({
+      clearColor: clearProbe ? [1, 0, 0, 1] as const : [light.sky[2][0], light.sky[2][1], light.sky[2][2], 1],
+      fog: { mode: "exponential", color: light.sky[1], density: daylight === 2 ? 0.009 : 0.0045 },
+      ...(clearProbe ? {} : { sky: { mode: "procedural", zenithColor: light.sky[0], horizonColor: light.sky[1], groundColor: light.sky[2], horizonCurve: 0.7, sunAngularRadius: 0.006 } as const }),
+    });
     for (const cell of visibleCells(focus, 58)) drawCell(cell, assets, (asset, matrix) => asset.draw(game.frame, matrix));
     const car = assets.get("sedan");
     if (car) {
@@ -128,6 +137,15 @@ const hooks = {
     speedLabel.textContent = driving ? `${Math.round(Math.abs(vehicle.state.speed) * 3.6)} km/h` : "";
     if (game.stats) statsLabel.textContent = `${game.stats.fps} FPS\n${game.stats.drawCalls} draws · ${game.stats.triangles.toLocaleString()} tris\n${visibleCells(focus, 58).length}/${DISTRICT.length} cells active`;
   },
+  afterRender(game: GameContext) {
+    if (game.input.action("Capture").justPressed) captureRequested = true;
+    if (!captureRequested || capturePending || game.time.frame < 3) return;
+    captureRequested = false; capturePending = true;
+    void captureScreenshot(game.canvas).then(blob => {
+      captureImage.src = URL.createObjectURL(blob);
+      captureImage.classList.add("visible");
+    }).catch(error => console.warn("Frame capture failed", error)).finally(() => { capturePending = false; });
+  },
   stop() { for (const asset of assets.values()) asset.dispose(); assets.clear(); physics?.destroy(); }
 };
 
@@ -144,6 +162,7 @@ runtime = new GameRuntime(canvas, hooks, {
     { name: "Brake", kind: "button", bindings: [{ device: "keyboard", code: "KeyS" }] },
     { name: "Handbrake", kind: "button", bindings: [{ device: "keyboard", code: "Space" }] },
     { name: "Time", kind: "button", bindings: [{ device: "keyboard", code: "KeyN" }] },
+    { name: "Capture", kind: "button", bindings: [{ device: "keyboard", code: "KeyP" }] },
     { name: "LookX", kind: "delta", bindings: [{ device: "pointer", axis: "x" }] },
     { name: "LookY", kind: "delta", bindings: [{ device: "pointer", axis: "y" }] }
   ],

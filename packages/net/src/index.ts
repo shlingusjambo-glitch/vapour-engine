@@ -19,3 +19,7 @@ export * from "./protocol.js";
 export * from "./server.js";
 export * from "./client.js";
 export * from "./host.js";
+export * from "./lag-compensation.js";
+export * from "./lobby.js";
+export * from "./transform-sync.js";
+export * from "./physics-sync.js";

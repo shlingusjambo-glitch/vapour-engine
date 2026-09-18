@@ -6,3 +6,6 @@
 export * from "./xr.js";
 export * from "./xr-locomotion.js";
 export * from "./interaction.js";
+export * from "./xr-rig.js";
+export * from "./xr-hands.js";
+export * from "./xr-capabilities.js";

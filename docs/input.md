@@ -167,3 +167,21 @@ is a map lookup. Call `update()` once, early, and read as often as you like.
 
 Contexts are checked per query, so a deep context stack costs a small array scan
 per action read — keep stacks shallow (menu over gameplay, not twenty layers).
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import InputActions
+
+var fire = { name: "Fire", kind: "button", bindings: [{ device: "keyboard", code: "Space" }, { device: "xr", hand: "right", control: "button", index: 0 }] }
+var actions = new InputActions([{ name: "gameplay", actions: [fire] }])
+
+export func update(gamepads, xr_inputs):
+    actions.update(gamepads, xr_inputs)
+    if actions.justPressed("Fire"):
+        return actions.lastDevice
+    return None
+```

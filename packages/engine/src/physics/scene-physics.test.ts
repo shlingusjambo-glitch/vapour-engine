@@ -70,6 +70,21 @@ describe("ScenePhysicsRuntime", () => {
     expect(() => runtime.fixedUpdate(1 / 60)).toThrow("cannot have both 2D and 3D colliders");
   });
 
+  it("serializes materials, combine rules, and mass overrides from component data", () => {
+    const scene = new SceneDocument(SceneDocument.empty("Materials"));
+    const crate = scene.addEntity("Crate"), plain = scene.addEntity("Plain");
+    scene.addComponent(crate.id, component("vapour.Rigidbody3D", { mass: 4, centerOfMass: [0.2, -0.3, 0] }));
+    scene.addComponent(crate.id, component("vapour.Collider3D", { material: "ice", frictionCombine: "min", restitutionCombine: "bogus" }));
+    scene.addComponent(plain.id, component("vapour.Collider3D"));
+    const commands: any[] = [], runtime = new ScenePhysicsRuntime(scene, { physics3d: fake3d(commands) });
+    runtime.defineMaterial({ name: "ice", friction: 0.02, restitution: 0 });
+    runtime.prepare();
+    expect(commands[0]).toMatchObject({ type: "defineMaterial", material: { name: "ice" } });
+    const inserted = commands.filter((value) => value.type === "insert").map((value) => value.descriptor);
+    expect(inserted.find((value) => value.massProperties !== null)).toMatchObject({ material: "ice", frictionCombine: "min", restitutionCombine: "average", massProperties: { mass: 4, centerOfMass: [0.2, -0.3, 0] } });
+    expect(inserted.find((value) => value.massProperties === null)).toMatchObject({ material: null, frictionCombine: "average" });
+  });
+
   it("moves scene characters through Rust and translates collision IDs", () => {
     const scene = new SceneDocument(SceneDocument.empty("Controller"));
     const ground = scene.addEntity("Ground"), player = scene.addEntity("Player");

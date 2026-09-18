@@ -10,3 +10,4 @@
  * every machine and can be replicated by seed rather than by particle.
  */
 export * from "./particles.js";
+export * from "./gpu-particles.js";

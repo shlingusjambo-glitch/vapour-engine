@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "id": "00000000-0000-4000-8000-000000000000",
+  "name": "{{PROJECT_NAME}}",
+  "editorVersion": "0.2.0-alpha",
+  "startupScene": "Assets/Scenes/Main.scene.json",
+  "scriptEntry": "Scripts/main.ts",
+  "rendering": {
+    "preferredCanvasFormat": "auto",
+    "powerPreference": "high-performance"
+  }
+}

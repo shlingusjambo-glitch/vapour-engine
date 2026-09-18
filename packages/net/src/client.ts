@@ -23,11 +23,11 @@ import type { ConnectionId, Transport } from "./transport.js";
 export interface ClientEntity {
   readonly id: NetworkId;
   readonly prefab: string;
-  readonly owner: ConnectionId | null;
+  owner: ConnectionId | null;
   /** The server's most recent authoritative state. */
   state: NetState;
   /** Whether this client owns it, and therefore predicts it. */
-  readonly local: boolean;
+  local: boolean;
 }
 
 interface Snapshot {
@@ -38,6 +38,8 @@ interface Snapshot {
 export interface PendingInput {
   readonly tick: number;
   readonly payload: NetState;
+  /** The newest server tick the client had when it sent this. */
+  readonly sentAtServerTick: number;
 }
 
 export interface ClientOptions {
@@ -57,6 +59,19 @@ export interface ClientOptions {
   readonly onDespawn?: (id: NetworkId) => void;
   /** Snapshots retained for interpolation and lag compensation. */
   readonly historyTicks?: number;
+  /** The server refused this client's `join`. */
+  readonly onReject?: (reason: string) => void;
+  /** Called once admitted; `resumed` when a dropped session was picked back up. */
+  readonly onWelcome?: (connection: ConnectionId, resumed: boolean) => void;
+  /**
+   * The server wants a scene loaded before it replicates anything.
+   *
+   * Load it, then call {@link NetworkClient.reportSceneProgress} with the same
+   * generation; the server drops reports for any other one.
+   */
+  readonly onSceneLoad?: (scene: string, generation: number) => void;
+  /** An entity changed owner; `entity.local` has already been updated. */
+  readonly onOwnership?: (entity: ClientEntity) => void;
 }
 
 export interface ClientStats {
@@ -67,6 +82,8 @@ export interface ClientStats {
   readonly snapshots: number;
   readonly bytesReceived: number;
   readonly mispredictions: number;
+  /** Round trip in server ticks, measured from input send to its acknowledgement. */
+  readonly rttTicks: number;
 }
 
 export class NetworkClient {
@@ -80,6 +97,10 @@ export class NetworkClient {
   #inputTick = 0;
   #bytesReceived = 0;
   #mispredictions = 0;
+  #rttTicks = 0;
+  #session: string | undefined;
+  #scene: string | undefined;
+  #sceneGeneration = 0;
 
   constructor(transport: Transport, options: ClientOptions = {}) {
     const delay = options.interpolationDelayTicks ?? 2;
@@ -96,6 +117,77 @@ export class NetworkClient {
 
   get serverTick(): number {
     return this.#serverTick;
+  }
+
+  /**
+   * The server tick this client is rendering remote entities at.
+   *
+   * Sent with every input so the server can rewind to exactly what the player
+   * saw when judging a shot; see `LagCompensator`.
+   */
+  get viewTick(): number {
+    return Math.max(-1, this.#serverTick - this.#options.interpolationDelayTicks);
+  }
+
+  /** Token to present to {@link resume} after a drop. */
+  get session(): string | undefined {
+    return this.#session;
+  }
+
+  /** Scene the server last asked this client to load, and its generation. */
+  get scene(): string | undefined {
+    return this.#scene;
+  }
+
+  get sceneGeneration(): number {
+    return this.#sceneGeneration;
+  }
+
+  /**
+   * Asks to be admitted. Credentials are opaque to the engine; the server's
+   * authentication hook interprets them.
+   */
+  join(credentials: NetState = {}, serverConnection: ConnectionId = 0): void {
+    const message: NetMessage = this.#session === undefined
+      ? { type: "join", credentials }
+      : { type: "join", credentials, resume: this.#session };
+    this.#transport.send(serverConnection, encodeMessage(message), { reliable: true });
+  }
+
+  /** Resumes a dropped session on a new transport connection. */
+  resume(session: string, credentials: NetState = {}, serverConnection: ConnectionId = 0): void {
+    if (!session) throw new Error("A session token is required to resume.");
+    this.#session = session;
+    this.join(credentials, serverConnection);
+  }
+
+  /**
+   * Reports scene load progress; `ready` releases replication for this client.
+   *
+   * The generation defaults to the one most recently requested, which is what
+   * a loader that finished the current scene wants. A loader that finished an
+   * *older* scene passes that generation and the server ignores it.
+   */
+  reportSceneProgress(progress: number, ready: boolean, generation = this.#sceneGeneration, serverConnection: ConnectionId = 0): void {
+    if (!(progress >= 0 && progress <= 1)) throw new Error("Scene progress must lie in [0, 1].");
+    this.#transport.send(
+      serverConnection,
+      encodeMessage({ type: "sceneProgress", generation, progress, ready }),
+      { reliable: true },
+    );
+  }
+
+  /**
+   * Asks the server to hand an entity this client owns to another connection,
+   * or back to the server with `null`. Ignored server-side unless this client
+   * is the current owner.
+   */
+  transferOwnership(id: NetworkId, to: ConnectionId | null, serverConnection: ConnectionId = 0): void {
+    this.#transport.send(
+      serverConnection,
+      encodeMessage({ type: "ownership", id, owner: to, tick: this.#serverTick }),
+      { reliable: true },
+    );
   }
 
   get entities(): readonly ClientEntity[] {
@@ -119,11 +211,15 @@ export class NetworkClient {
    */
   sendInput(payload: NetState, serverConnection: ConnectionId = 0): number {
     const tick = this.#inputTick++;
-    this.#pending.push({ tick, payload });
+    this.#pending.push({ tick, payload, sentAtServerTick: this.#serverTick });
     // Bound the buffer: a client that loses its connection must not grow this
     // without limit while it reconnects.
     if (this.#pending.length > this.#options.historyTicks * 4) this.#pending.shift();
-    this.#transport.send(serverConnection, encodeMessage({ type: "input", tick, payload }), { reliable: false });
+    this.#transport.send(
+      serverConnection,
+      encodeMessage({ type: "input", tick, payload, viewTick: this.viewTick }),
+      { reliable: false },
+    );
 
     if (this.#options.predict) {
       for (const entity of this.#entities.values()) {
@@ -138,7 +234,7 @@ export class NetworkClient {
     if (!name.trim()) throw new Error("An RPC requires a non-empty name.");
     this.#transport.send(
       options.to ?? 0,
-      encodeMessage({ type: "rpc", name, id: options.id ?? null, args: args as never, tick: this.#serverTick }),
+      encodeMessage({ type: "rpc", name, id: options.id ?? null, args: args as never, tick: this.#serverTick, viewTick: this.viewTick }),
       { reliable: true },
     );
   }
@@ -189,15 +285,45 @@ export class NetworkClient {
       snapshots: this.#snapshots.length,
       bytesReceived: this.#bytesReceived,
       mispredictions: this.#mispredictions,
+      rttTicks: this.#rttTicks,
     };
   }
 
   #handle(message: NetMessage, serverConnection: ConnectionId): void {
     switch (message.type) {
       case "welcome":
+        // A welcome is a new view of the world, resumed or not: whatever this
+        // client held is about to be re-spawned in full, and anything that was
+        // despawned while it was away would otherwise linger forever.
+        for (const id of [...this.#entities.keys()]) {
+          this.#entities.delete(id);
+          this.#options.onDespawn?.(id);
+        }
+        this.#snapshots.length = 0;
+        this.#pending.length = 0;
         this.#connection = message.connection;
         this.#serverTick = message.tick;
+        if (message.session !== undefined) this.#session = message.session;
+        this.#options.onWelcome?.(message.connection, message.resumed === true);
+        if (message.scene !== undefined) this.#sceneRequested(message.scene, message.sceneGeneration ?? 0);
         break;
+
+      case "reject":
+        this.#options.onReject?.(message.reason);
+        break;
+
+      case "sceneLoad":
+        this.#sceneRequested(message.scene, message.generation);
+        break;
+
+      case "ownership": {
+        const entity = this.#entities.get(message.id);
+        if (!entity) break;
+        entity.owner = message.owner;
+        entity.local = message.owner !== null && message.owner === this.#connection;
+        this.#options.onOwnership?.(entity);
+        break;
+      }
 
       case "spawn": {
         const entity: ClientEntity = {
@@ -243,7 +369,15 @@ export class NetworkClient {
         while (this.#snapshots.length > this.#options.historyTicks) this.#snapshots.shift();
 
         if (message.ackInput !== undefined) {
-          while (this.#pending.length > 0 && this.#pending[0]!.tick <= message.ackInput) this.#pending.shift();
+          while (this.#pending.length > 0 && this.#pending[0]!.tick <= message.ackInput) {
+            const acked = this.#pending.shift()!;
+            // The input was sent when the client had seen `sentAtServerTick`;
+            // its acknowledgement arrives on this tick. The difference is one
+            // round trip, in the server's own units.
+            if (acked.tick === message.ackInput && acked.sentAtServerTick >= 0) {
+              this.#rttTicks = message.tick - acked.sentAtServerTick;
+            }
+          }
         }
         this.#transport.send(serverConnection, encodeMessage({ type: "ack", tick: message.tick }), { reliable: false });
         break;
@@ -252,6 +386,12 @@ export class NetworkClient {
       default:
         break;
     }
+  }
+
+  #sceneRequested(scene: string, generation: number): void {
+    this.#scene = scene;
+    this.#sceneGeneration = generation;
+    this.#options.onSceneLoad?.(scene, generation);
   }
 
   /**

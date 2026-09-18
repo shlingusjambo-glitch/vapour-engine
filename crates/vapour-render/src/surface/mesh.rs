@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
-use crate::mesh::{MeshData, MeshVertex};
+use crate::mesh::{MeshData, MeshVertex, SkinVertex};
 
 impl VertexLayout for MeshVertex {
     const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
@@ -32,11 +32,48 @@ pub(crate) trait VertexLayout {
     }
 }
 
+/// The standard vertex buffer exposing only its position at location 0, for
+/// passes (decal volumes) that draw a mesh's shape and nothing else.
+pub(crate) const POSITION_ONLY_ATTRIBUTES: [wgpu::VertexAttribute; 1] =
+    wgpu::vertex_attr_array![0 => Float32x3];
+
+pub(crate) fn position_only_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<MeshVertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &POSITION_ONLY_ATTRIBUTES,
+    }
+}
+
+/// Locations 13/14 sit past `MeshVertex` (0-5) and `InstanceData` (6-12), so
+/// every mesh — skinned or not — can bind this as a third vertex buffer
+/// without the pipeline needing a skinned/static variant.
+impl SkinVertex {
+    pub(crate) const ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+        13 => Uint32x4,
+        14 => Float32x4
+    ];
+
+    pub(crate) fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<SkinVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
 /// One uploaded mesh: its buffers and how many indices to draw.
 pub(crate) struct MeshGpu {
     pub(crate) vertex_buffer: wgpu::Buffer,
     pub(crate) index_buffer: wgpu::Buffer,
     pub(crate) index_count: u32,
+    /// Always present, even for a static mesh (zero-filled): see
+    /// `SkinVertex`'s doc comment for why the pipeline never branches on it.
+    pub(crate) skin_buffer: wgpu::Buffer,
+    /// Radius of the smallest origin-centred sphere enclosing the mesh's
+    /// bounds, for frustum culling (see `surface::culling::world_bounds`).
+    pub(crate) bounding_radius: f32,
 }
 
 /// Meshes the renderer can draw, addressed by identifier.
@@ -103,14 +140,32 @@ impl MeshRegistry {
     }
 }
 
+/// Distance from the origin to the farthest corner of the mesh's bounds.
+pub(crate) fn bounding_radius(data: &MeshData) -> f32 {
+    let (minimum, maximum) = data.bounds();
+    (0..3)
+        .map(|axis| minimum[axis].abs().max(maximum[axis].abs()).powi(2))
+        .sum::<f32>()
+        .sqrt()
+}
+
 /// The camera and light the next frame will use.
 ///
 /// Both submission paths — the editor's JSON render world and a game's binary
 /// frame — resolve into this, so `update_uniforms` has exactly one input shape
 /// and the two paths cannot drift apart in how they light a scene.
 impl MeshGpu {
-    /// Uploads prepared geometry. The caller has already validated it.
+    /// Uploads prepared geometry. The caller has already validated it,
+    /// including that `data.skin`, when present, has one entry per vertex.
     pub(crate) fn upload(device: &wgpu::Device, label: &str, data: &MeshData) -> Self {
+        let owned_zeroed_skin;
+        let skin: &[SkinVertex] = match &data.skin {
+            Some(skin) => skin,
+            None => {
+                owned_zeroed_skin = vec![SkinVertex::UNSKINNED; data.vertices.len()];
+                &owned_zeroed_skin
+            }
+        };
         Self {
             vertex_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
@@ -123,6 +178,12 @@ impl MeshGpu {
                 usage: wgpu::BufferUsages::INDEX,
             }),
             index_count: data.indices.len() as u32,
+            bounding_radius: bounding_radius(data),
+            skin_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(skin),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
         }
     }
 }

@@ -261,3 +261,99 @@ The origin is **per client**. Two players in different parts of the world will
 have different origins, so anything on the wire must be in absolute world space
 — replicating a local coordinate produces objects in wildly wrong places. Convert
 with `toWorld` on send and `toLocal` on receive.
+
+## Terrain chunks, sculpting, and vegetation (Mirage)
+
+`TerrainChunkGrid`, `TerrainMaterial`, `TerrainSplatMap`, `TerrainSculptor`,
+`TerrainPaintbrush`, `TerrainEditHistory`, and the vegetation scatter/LOD
+helpers (`scatterVegetation`, `vegetationInstances`, `vegetationLodRegistry`)
+are documented in [`terrain.md`](terrain.md); they build on `selectTerrainLod`
+and `terrainSeams` above.
+
+## Voxel lighting (Mirage)
+
+`VoxelLightField` computes block light (a BFS flood from emissive blocks,
+attenuating one level per step through non-opaque blocks) and skylight (the
+same flood, seeded top-down from every column open to the sky) for a
+`VoxelWorld`, nibble-packed per chunk (`sky << 4 | block`, one byte per voxel):
+
+```ts
+import { VoxelLightField } from "@vapour/engine";
+
+const light = new VoxelLightField(world, palette);
+light.recomputeAll(); // once, after bulk-loading or generating a region
+
+world.setBlock(x, y, z, blockId);
+light.relight(x, y, z); // cheap, confined to a padded box after one edit
+```
+
+`relight` only touches a box of radius `MAX_LIGHT_LEVEL` (light cannot travel
+further than that from any source), reusing the box's own shell as a fixed
+boundary condition — correct because nothing outside the box could have been
+affected by an edit at its centre. A change right at the edge of one chunk can
+still want a second `relight` call centred further out, or a `recomputeAll`,
+to fully converge; see the `ponytail:` note on `relight` for the exact
+trade-off.
+
+`meshVoxelChunk` accepts a `light` field and folds `max(block, sky) / 15` into
+both its existing `colors` output and a new `light` per-vertex channel; omit it
+and every vertex reads fully lit, unchanged from before this existed.
+
+## Voxel save format and chunk sync (Mirage)
+
+`encodeChunk`/`decodeChunk` (`voxel-save.ts`) run-length encode a chunk's
+`Uint16Array` blocks into a small, versioned, byte-identical-round-trip
+buffer — real terrain is long runs of one repeated block, so this is
+typically under 1% of the raw array's size with no dependency and no loss.
+`encodeWorld`/`decodeWorld` add a small index (chunk coordinate + byte range)
+over multiple chunks, and accept `only` to save just the coordinates from
+`world.takeDirtyChunks()` for an incremental save.
+
+```ts
+import { encodeWorld, decodeWorld } from "@vapour/engine";
+
+const save = encodeWorld(world, { only: world.takeDirtyChunks() });
+persistToDisk(save); // save.data plus save.index is everything needed
+
+decodeWorld(freshWorld, loadedSave);
+```
+
+Multiplayer chunk sync is defined as message *shapes* and a pure reducer, not
+a transport — `packages/net` (owned separately) is the integration point for
+actually carrying these over a socket:
+
+```ts
+import { respondToChunkRequest, applyVoxelSyncMessage, type VoxelSyncMessage } from "@vapour/engine";
+
+// Server, on receiving a client's request:
+const response = respondToChunkRequest(serverWorld, request); // VoxelChunkResponse | undefined
+
+// Either side, applying any message from the wire:
+applyVoxelSyncMessage(world, message satisfies VoxelSyncMessage);
+```
+
+`applyVoxelSyncMessage` is pure with respect to (world, message): the same
+inputs always produce the same result, which is what lets a server apply an
+edit and a client apply its broadcast with the exact same function and no
+special-casing.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import WorldPartition, FloatingOrigin, encodeChunk
+
+var partition = new WorldPartition({ cellSize: 64, loadRadius: 2, unloadPadding: 1 })
+var origin = new FloatingOrigin({ threshold: 128 })
+
+export func stream(viewer):
+    var shift = origin.update(origin.toLocal(viewer))
+    if shift != None:
+        partition.applyOriginShift(shift)
+    return partition.update(origin.toLocal(viewer))
+
+export func save_chunk(chunk):
+    return encodeChunk(chunk)
+```

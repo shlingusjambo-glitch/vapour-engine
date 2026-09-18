@@ -304,3 +304,22 @@ same order — which is what makes it usable inside a rollback or prediction loo
 over presentation on some platforms. If your game must keep simulating during a
 session, construct it with `runWhileHidden: true` and drive pausing from the XR
 session state instead.
+
+## Vapour Script
+
+The same API from Vapour Script — VS compiles to ESM and receives the same
+engine objects as TypeScript, so nothing below is a binding layer.
+
+```py
+from "@vapour/engine" import Signal, TweenRunner, Scheduler, waitSeconds
+
+var damaged = new Signal()
+var tweens = new TweenRunner()
+var scheduler = new Scheduler()
+
+export func hit(target, flash_coroutine):
+    damaged.emit(target)
+    # Coroutines are generator functions; VS scripts pass one in from TypeScript
+    # or a `.ts` sibling, since VS has no generator syntax yet.
+    return scheduler.run(() => flash_coroutine(target, waitSeconds(0.2)))
+```

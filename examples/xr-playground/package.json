@@ -1,0 +1,23 @@
+{
+  "name": "@vapour/example-xr-playground",
+  "version": "0.2.5-alpha",
+  "type": "module",
+  "private": true,
+  "description": "Mirage showcase: XR rig, hands, haptics, input bindings, grabbing, locomotion, and world-space UI composed from engine systems",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "run": "tsc -p tsconfig.json && node dist/run.js"
+  },
+  "dependencies": {
+    "@vapour/engine": "workspace:*",
+    "@vapour/math": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "LGPL-3.0-or-later"
+}

@@ -59,13 +59,13 @@ describe("GameRuntime", () => {
     const calls: string[] = [];
     const { runtime } = runtimeWith({
       start: () => { calls.push("game:start"); }, fixedUpdate: () => { calls.push("game:fixed"); },
-      update: () => { calls.push("game:update"); }, lateUpdate: () => { calls.push("game:late"); }, stop: () => { calls.push("game:stop"); },
+      update: () => { calls.push("game:update"); }, lateUpdate: () => { calls.push("game:late"); }, afterRender: () => { calls.push("game:after"); }, stop: () => { calls.push("game:stop"); },
     }, { fixedHz: 10, scripts: [
-      { id: "ts", order: 20, module: { start: () => { calls.push("ts:start"); }, fixedUpdate: () => { calls.push("ts:fixed"); }, update: () => { calls.push("ts:update"); }, lateUpdate: () => { calls.push("ts:late"); }, stop: () => { calls.push("ts:stop"); } } },
-      { id: "vs", order: 10, module: { start: () => { calls.push("vs:start"); }, fixedUpdate: () => { calls.push("vs:fixed"); }, update: () => { calls.push("vs:update"); }, lateUpdate: () => { calls.push("vs:late"); }, stop: () => { calls.push("vs:stop"); } } },
+      { id: "ts", order: 20, module: { start: () => { calls.push("ts:start"); }, fixedUpdate: () => { calls.push("ts:fixed"); }, update: () => { calls.push("ts:update"); }, lateUpdate: () => { calls.push("ts:late"); }, afterRender: () => { calls.push("ts:after"); }, stop: () => { calls.push("ts:stop"); } } },
+      { id: "vs", order: 10, module: { start: () => { calls.push("vs:start"); }, fixedUpdate: () => { calls.push("vs:fixed"); }, update: () => { calls.push("vs:update"); }, lateUpdate: () => { calls.push("vs:late"); }, afterRender: () => { calls.push("vs:after"); }, stop: () => { calls.push("vs:stop"); } } },
     ] });
     await runtime.start(); const base = performance.now(); runtime.step(base + 100); runtime.stop();
-    expect(calls).toEqual(["game:start", "vs:start", "ts:start", "game:fixed", "vs:fixed", "ts:fixed", "game:update", "vs:update", "ts:update", "game:late", "vs:late", "ts:late", "game:stop", "ts:stop", "vs:stop"]);
+    expect(calls).toEqual(["game:start", "vs:start", "ts:start", "game:fixed", "vs:fixed", "ts:fixed", "game:update", "vs:update", "ts:update", "game:late", "vs:late", "ts:late", "game:after", "vs:after", "ts:after", "game:stop", "ts:stop", "vs:stop"]);
     expect(runtime.scriptIds).toEqual(["vs", "ts"]);
   });
 
